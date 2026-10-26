@@ -10,7 +10,8 @@ CREATE INDEX idx_sig_open ON signals(status,symbol,tf);
 CREATE INDEX idx_sig_time ON signals(candle_t);
 CREATE TABLE alerts(id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, type TEXT NOT NULL, message TEXT NOT NULL, created_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE backtests(id INTEGER PRIMARY KEY, config TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL);`];
+CREATE TABLE backtests(id INTEGER PRIMARY KEY, config TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL);`,
+`ALTER TABLE alerts ADD COLUMN sent INTEGER NOT NULL DEFAULT 0;`];
 
 function open(path = ':memory:') {
   const db = new DatabaseSync(path);
@@ -27,6 +28,7 @@ function open(path = ':memory:') {
       return r.changes ? Number(r.lastInsertRowid) : null; // null = duplicate
     },
     openSignals: (symbol, tf) => q(`SELECT * FROM signals WHERE status='open' AND symbol=? AND tf=? ORDER BY candle_t`).all(symbol, tf),
+    openPairs: () => q(`SELECT DISTINCT symbol,tf FROM signals WHERE status='open'`).all(),
     resolveSignal: (id, status, r, t, assumptions) => q(`UPDATE signals SET status=?,r=?,resolved_t=?,assumptions=? WHERE id=? AND status='open'`).run(status, r, t, assumptions, id).changes,
     listSignals({ status, limit = 100 } = {}) {
       const w = status === 'closed' ? `WHERE status!='open'` : status === 'open' ? `WHERE status='open'` : '';
@@ -35,6 +37,9 @@ function open(path = ':memory:') {
     allSignals: ({ from = 0, to = 9e15 } = {}) => q(`SELECT * FROM signals WHERE candle_t>=? AND candle_t<=? ORDER BY candle_t`).all(from, to),
     addAlert: (key, type, message, now) => q(`INSERT OR IGNORE INTO alerts(key,type,message,created_at) VALUES(?,?,?,?)`).run(key, type, message, now).changes > 0,
     listAlerts: (limit = 50) => q(`SELECT * FROM alerts ORDER BY id DESC LIMIT ?`).all(limit),
+    unsentAlerts: (limit = 10) => q(`SELECT * FROM alerts WHERE sent=0 ORDER BY id LIMIT ?`).all(limit),
+    markSent: id => q(`UPDATE alerts SET sent=1 WHERE id=?`).run(id).changes,
+    markAllSent: () => q(`UPDATE alerts SET sent=1 WHERE sent=0`).run().changes,
     markAlertsRead: () => q(`UPDATE alerts SET read=1 WHERE read=0`).run().changes,
     getSetting: k => (q(`SELECT value FROM settings WHERE key=?`).get(k) || {}).value,
     setSetting: (k, v) => q(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(k, String(v)),

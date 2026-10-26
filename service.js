@@ -13,13 +13,13 @@ function cleanParams(i = {}) {
   p.version = version(p); return p;
 }
 
-function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, provider = 'twelvedata' }) {
-  const cache = new Map();
+function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, provider = 'twelvedata' }) {
+  const cache = new Map(), lastTracked = {}, att = {};
   const params = () => cleanParams(JSON.parse(store.getSetting('params') || '{}'));
 
   async function load(symbol, tf, size = 400, force = false) {
     const key = `${symbol}|${tf}|${size}`, hit = cache.get(key);
-    if (hit && !force && now() - hit.at < ttlMs) return hit.data; // cached: avoids hitting the provider on every page load
+    if (hit && now() - hit.at < (force ? minForceMs : ttlMs)) return hit.data; // cached: avoids hitting the provider on every page load
     try { const data = await fetchCandles({ symbol, tf, outputsize: size }); cache.set(key, { at: now(), data }); return data; }
     catch (e) {
       const kind = e.kind || 'provider';
@@ -30,6 +30,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, pro
 
   function track(symbol, tf, closed) {
     const ms = E.TF_MIN[tf] * 60000; let limited = 0;
+    if (closed.length) lastTracked[`${symbol}|${tf}`] = closed[closed.length - 1].t;
     for (const s of store.openSignals(symbol, tf)) {
       if (!closed.length || closed[0].t > s.candle_t + ms) { limited++; continue; } // history no longer covers this signal
       const future = closed.filter(k => k.t > s.candle_t);
@@ -58,8 +59,11 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, pro
       recorded = store.addSignal({ symbol, tf, dir: sig.signal, strategy: p.version, params: p, candle_t: last.t, provider: d.source, ...sig.levels, indicators: { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] }, created_at: now() });
       if (recorded) store.addAlert(`sig:${recorded}`, 'new_signal', `${symbol} ${tf}: new ${sig.signal} signal at ${sig.levels.entry}`, now());
     }
+    const ms = E.TF_MIN[tf] * 60000, raw = d.candles[d.candles.length - 1];
+    const live = raw && raw.t + ms > now() ? { price: raw.c, t: raw.t } : null, livePx = live ? live.price : last ? last.c : null; // live = price of the still-forming candle
+    const entryCheck = sig.levels ? E.entryCheck(sig.signal, sig.levels, livePx, { barsOld: last ? Math.max(0, Math.floor((now() - (last.t + ms)) / ms)) : 0 }) : null;
     const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120);
-    return { ok: true, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
+    return { ok: true, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
       signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
       indicators: i >= 0 ? { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] } : null,
       chart: closed.slice(from).map((k, j) => ({ ...k, e20: ind.e20[from + j], e50: ind.e50[from + j], e200: ind.e200[from + j] })) };
@@ -84,6 +88,44 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, pro
     const all = E.summarize(rows.map(toTrade)); delete all.costAdjusted;
     return { overall: all, bySymbol: group(s => s.symbol), byTimeframe: group(s => s.tf), byStrategy: group(s => s.strategy), note: 'Gross results: no reliable spread data is stored for live signals. Open, expired and ambiguous signals are excluded from win rate.' };
   }
-  return { snapshot, backtest, performance, params, cleanParams, load };
+  // Checks every open signal on every pair/timeframe, at most once per candle close (a few retries if the provider lags).
+  async function trackAll() {
+    let n = 0;
+    for (const { symbol, tf } of store.openPairs().slice(0, 8)) {
+      const ms = E.TF_MIN[tf] * 60000, key = `${symbol}|${tf}`, expected = Math.floor((now() - 15000) / ms) * ms - ms;
+      if (lastTracked[key] >= expected) continue;
+      const a = att[key]; if (a && a.expected === expected && a.n >= 5) continue;
+      att[key] = { expected, n: (a && a.expected === expected ? a.n : 0) + 1 };
+      try { const d = await load(symbol, tf, 400); track(symbol, tf, E.closedOnly(d.candles, tf, now())); n++; } catch { /* alert already recorded by load() */ }
+    }
+    return n;
+  }
+  async function livePrice(symbol) {
+    let best = null;
+    for (const [k, c] of cache) if (k.startsWith(symbol + '|') && now() - c.at < 90000 && (!best || c.at > best.at)) best = c;
+    try { const d = best ? best.data : await load(symbol, '15min', 3), k = d.candles[d.candles.length - 1]; return k ? k.c : null; } catch { return null; }
+  }
+  async function enrich(rows) {
+    const px = {};
+    for (const s of rows) { if (s.status !== 'open' || s.symbol in px) continue; px[s.symbol] = Object.keys(px).length >= 4 ? null : await livePrice(s.symbol); }
+    return rows.map(s => {
+      if (s.status !== 'open') return s;
+      const ms = E.TF_MIN[s.tf] * 60000, barsOld = Math.max(0, Math.floor((now() - (s.candle_t + ms)) / ms));
+      return { ...s, livePrice: px[s.symbol], check: E.entryCheck(s.dir, { entry: s.entry, stop: s.stop, target: s.target }, px[s.symbol], { barsOld }) };
+    });
+  }
+  async function scan(symbol) {
+    if (!INSTRUMENTS.includes(symbol)) throw new Error('Unsupported symbol');
+    const out = [];
+    for (const tf of Object.keys(E.TF_MIN)) {
+      const d = await snapshot(symbol, tf), ms = E.TF_MIN[tf] * 60000;
+      if (!d.ok) { out.push({ tf, ok: false, error: d.error }); continue; }
+      const open = store.openSignals(symbol, tf).map(s => ({ id: s.id, dir: s.dir, entry: s.entry, stop: s.stop, target: s.target, signalT: s.candle_t + ms,
+        check: E.entryCheck(s.dir, { entry: s.entry, stop: s.stop, target: s.target }, d.livePrice, { barsOld: Math.max(0, Math.floor((now() - (s.candle_t + ms)) / ms)) }) }));
+      out.push({ tf, ok: true, signal: d.signal, levels: d.levels, entryCheck: d.entryCheck, stale: d.stale, signalT: d.latestCandleT + ms, livePrice: d.livePrice, open });
+    }
+    return out;
+  }
+  return { trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };

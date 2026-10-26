@@ -114,4 +114,17 @@ function backtest(c, tf, p = DEFAULTS, o = {}) {
   return { params: p, options: { spread, maxBars, devFraction }, candles: c.length, gaps: issues.length, trades,
     all: summarize(trades), development: summarize(trades.filter(t => t.t < cut)), outOfSample: summarize(trades.filter(t => t.t >= cut)) };
 }
-module.exports = { TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };
+// Is a signal still worth entering at the current price? Transparent heuristic, not a prediction.
+function entryCheck(dir, L, price, o = {}) {
+  const { minRR = 1.5, maxAdverseR = 0.5, maxEntryBars = 3, barsOld = 0 } = o;
+  if (!L || !Number.isFinite(price)) return { state: 'UNKNOWN', text: 'No live price available' };
+  const s = dir === 'BUY' ? 1 : -1, risk = Math.abs(L.entry - L.stop);
+  if (s * (price - L.stop) <= 0) return { state: 'INVALID', text: 'Price is already beyond the stop - setup failed' };
+  if (s * (L.target - price) <= 0) return { state: 'INVALID', text: 'Price already reached the target - too late' };
+  if (barsOld > maxEntryBars) return { state: 'EXPIRED', text: `Entry window passed: signal is ${barsOld} candles old (limit ${maxEntryBars})` };
+  const moved = s * (price - L.entry) / risk, rrNow = (s * (L.target - price)) / (s * (price - L.stop));
+  if (moved < -maxAdverseR) return { state: 'SKIP', moved, rrNow, text: `Skip: price moved ${(-moved).toFixed(2)}R against the setup` };
+  if (rrNow < minRR) return { state: 'LATE', moved, rrNow, text: `Late, skip: price is ${moved.toFixed(2)}R toward target, remaining R:R ${rrNow.toFixed(2)} (needs ${minRR})` };
+  return { state: 'ENTER', moved, rrNow, text: `Still valid: price ${moved >= 0 ? '+' : ''}${moved.toFixed(2)}R from entry, remaining R:R ${rrNow.toFixed(2)}` };
+}
+module.exports = { entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };
