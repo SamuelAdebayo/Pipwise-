@@ -127,4 +127,13 @@ function entryCheck(dir, L, price, o = {}) {
   if (rrNow < minRR) return { state: 'LATE', moved, rrNow, text: `Late, skip: price is ${moved.toFixed(2)}R toward target, remaining R:R ${rrNow.toFixed(2)} (needs ${minRR})` };
   return { state: 'ENTER', moved, rrNow, text: `Still valid: price ${moved >= 0 ? '+' : ''}${moved.toFixed(2)}R from entry, remaining R:R ${rrNow.toFixed(2)}` };
 }
-module.exports = { entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };
+// Drops provider candles that fail validation (bad OHLC, duplicate or out-of-order times) and reports them, instead of failing the whole dataset.
+function sanitize(c) {
+  const out = [], excluded = []; let lastT = -Infinity;
+  for (const k of c) {
+    const ok = [k.t, k.o, k.h, k.l, k.c].every(Number.isFinite) && k.h >= Math.max(k.o, k.c, k.l) && k.l <= Math.min(k.o, k.c, k.h);
+    if (!ok) excluded.push({ t: k.t, type: 'ohlc' }); else if (k.t <= lastT) excluded.push({ t: k.t, type: 'duplicate_or_order' }); else { out.push(k); lastT = k.t; }
+  }
+  return { candles: out, excluded };
+}
+module.exports = { sanitize, entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };

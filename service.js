@@ -48,9 +48,12 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     const p = params(); let d;
     try { d = await load(symbol, tf, 400, force); }
     catch (e) { return { ok: false, error: { kind: e.kind, message: e.message }, strategy: p.version }; }
-    const bad = E.validateCandles(d.candles, tf).filter(x => x.type !== 'gap');
-    if (bad.length) { store.addAlert(`invalid:${symbol}:${tf}:${Math.floor(now() / 3600000)}`, 'api_error', `${symbol} ${tf}: ${bad.length} invalid candle(s) from provider`, now()); return { ok: false, error: { kind: 'invalid_data', message: `${bad.length} invalid candle(s) received` }, strategy: p.version }; }
-    const closed = E.closedOnly(d.candles, tf, now()), stale = E.isStale(closed, tf, now()), last = closed[closed.length - 1];
+    const clean = E.sanitize(d.candles), cc = clean.candles, lastGood = cc.length ? cc[cc.length - 1].t : -1;
+    if (!cc.length || clean.excluded.some(x => x.t > lastGood)) { // the newest candle itself is bad: do not trade on it
+      store.addAlert(`invalid:${symbol}:${tf}:${Math.floor(now() / 3600000)}`, 'api_error', `${symbol} ${tf}: latest candle from provider failed validation`, now());
+      return { ok: false, error: { kind: 'invalid_data', message: 'Latest candle from the provider failed validation' }, strategy: p.version };
+    }
+    const closed = E.closedOnly(cc, tf, now()), stale = E.isStale(closed, tf, now()), last = closed[closed.length - 1];
     if (stale) store.addAlert(`stale:${symbol}:${tf}:${last ? last.t : 0}`, 'stale_data', `${symbol} ${tf}: latest closed candle is stale`, now());
     const ind = E.indicators(closed), i = closed.length - 1;
     const sig = i >= 0 ? E.signalAt(ind, closed, i, p) : { signal: 'WAIT', rules: [], levels: null };
@@ -59,11 +62,11 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       recorded = store.addSignal({ symbol, tf, dir: sig.signal, strategy: p.version, params: p, candle_t: last.t, provider: d.source, ...sig.levels, indicators: { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] }, created_at: now() });
       if (recorded) store.addAlert(`sig:${recorded}`, 'new_signal', `${symbol} ${tf}: new ${sig.signal} signal at ${sig.levels.entry}`, now());
     }
-    const ms = E.TF_MIN[tf] * 60000, raw = d.candles[d.candles.length - 1];
+    const ms = E.TF_MIN[tf] * 60000, raw = cc[cc.length - 1];
     const live = raw && raw.t + ms > now() ? { price: raw.c, t: raw.t } : null, livePx = live ? live.price : last ? last.c : null; // live = price of the still-forming candle
     const entryCheck = sig.levels ? E.entryCheck(sig.signal, sig.levels, livePx, { barsOld: last ? Math.max(0, Math.floor((now() - (last.t + ms)) / ms)) : 0 }) : null;
     const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120);
-    return { ok: true, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
+    return { ok: true, excludedCandles: clean.excluded.length, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
       signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
       indicators: i >= 0 ? { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] } : null,
       chart: closed.slice(from).map((k, j) => ({ ...k, e20: ind.e20[from + j], e50: ind.e50[from + j], e200: ind.e200[from + j] })) };
@@ -73,10 +76,10 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     if (!INSTRUMENTS.includes(o.symbol) || !E.TF_MIN[o.tf]) throw new Error('Unsupported symbol or timeframe');
     const p = cleanParams(o.params), spread = Number(o.spread || 0);
     if (!(spread >= 0)) throw new Error('Invalid spread');
-    const d = await load(o.symbol, o.tf, 5000), closed = E.closedOnly(d.candles, o.tf, now());
+    const d = await load(o.symbol, o.tf, 5000), san = E.sanitize(d.candles), closed = E.closedOnly(san.candles, o.tf, now());
     if (closed.length < 400) throw new Error('Not enough history for a backtest (need 400+ closed candles)');
     const res = E.backtest(closed, o.tf, p, { spread, maxBars: MAX_BARS, from: o.from, to: o.to });
-    const dataset = { provider: d.source, symbol: o.symbol, tf: o.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, gapsOrClosures: res.gaps };
+    const dataset = { provider: d.source, symbol: o.symbol, tf: o.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, gapsOrClosures: res.gaps, excludedCandles: san.excluded.length, excludedSample: san.excluded.slice(0, 5).map(x => x.t) };
     const out = { dataset, params: p, spread, assumptions: `${ASSUMPTIONS} One position at a time. Spread charged as spread/risk in R, only where you entered a spread.`, all: res.all, development: res.development, outOfSample: res.outOfSample, trades: res.trades.length };
     store.saveBacktest({ symbol: o.symbol, tf: o.tf, params: p, spread, from: o.from || null, to: o.to || null }, out, now());
     return out;
@@ -96,7 +99,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       if (lastTracked[key] >= expected) continue;
       const a = att[key]; if (a && a.expected === expected && a.n >= 5) continue;
       att[key] = { expected, n: (a && a.expected === expected ? a.n : 0) + 1 };
-      try { const d = await load(symbol, tf, 400); track(symbol, tf, E.closedOnly(d.candles, tf, now())); n++; } catch { /* alert already recorded by load() */ }
+      try { const d = await load(symbol, tf, 400); track(symbol, tf, E.closedOnly(E.sanitize(d.candles).candles, tf, now())); n++; } catch { /* alert already recorded by load() */ }
     }
     return n;
   }
