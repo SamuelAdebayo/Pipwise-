@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pipwise</title>
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--tx:#1b1b1a;--mut:#6b6b66;--bd:#dcdcd6;--up:#117a4d;--dn:#b3261e;--warn:#9a6700;--ac:#1f4fd8}
+@media(prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--tx:#ececE8;--mut:#9a9a93;--bd:#35352f;--up:#4cc38a;--dn:#ff7b72;--warn:#e3b341;--ac:#7aa2ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:12px 14px}h1{font-size:20px;margin:0}
+main{max-width:900px;margin:auto;padding:0 12px 24px;display:grid;gap:12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;overflow-x:auto}
+select,input,button{font:inherit;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--tx)}button{cursor:pointer;background:var(--ac);color:#fff;border:0}
+.row{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}.mut{color:var(--mut)}.badge{padding:2px 8px;border-radius:99px;border:1px solid var(--bd);font-size:13px}
+.BUY{color:var(--up)}.SELL{color:var(--dn)}.big{font-size:26px;font-weight:700}.warn{color:var(--warn)}.err{color:var(--dn)}
+table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:5px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
+nav{display:flex;gap:6px;flex-wrap:wrap}nav button{background:var(--card);color:var(--tx);border:1px solid var(--bd)}nav button.on{background:var(--ac);color:#fff}
+svg text{fill:var(--mut);font-size:11px}label{display:inline-flex;gap:4px;align-items:center}ul{margin:4px 0;padding-left:18px}
+</style></head><body>
+<header><h1>Pipwise <span class="mut" style="font-size:13px">analysis &amp; paper tracking · no live trading</span></h1>
+<div class="row"><select id="sym" aria-label="Instrument"></select><select id="tf" aria-label="Timeframe"></select><button id="reload">Refresh</button></div></header>
+<main>
+<section id="setup" class="card" hidden><b>Setup needed</b><p>No market-data key is configured, so Pipwise shows no prices (it never invents them). Set <code>TWELVEDATA_API_KEY</code> on the server and restart. See README.</p></section>
+<section id="status" class="card"></section>
+<section id="signal" class="card"></section>
+<section class="card"><svg id="chart" viewBox="0 0 720 320" width="100%" role="img" aria-label="Candlestick chart"></svg></section>
+<section class="card"><nav id="tabs"></nav><div id="tab" style="margin-top:10px"></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s);let CFG,TAB='history';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const api=async(p,o)=>{const r=await fetch(p,o),j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j};
+const dp=s=>s.includes('JPY')?3:s.startsWith('XAU')?2:5,f=(s,x)=>x==null?'–':Number(x).toFixed(dp(s)),n2=x=>x==null?'–':Number(x).toFixed(2),pc=x=>x==null?'–':(x*100).toFixed(1)+'%';
+const tm=t=>t?new Intl.DateTimeFormat([],{timeZone:CFG.tz,dateStyle:'medium',timeStyle:'short'}).format(t):'–';
+const sym=()=>$('#sym').value,tf=()=>$('#tf').value;
+async function init(){CFG=await api('/api/config');$('#sym').innerHTML=CFG.instruments.map(i=>`<option>${esc(i)}</option>`).join('');$('#tf').innerHTML=CFG.timeframes.map(i=>`<option>${esc(i)}</option>`).join('');
+ const T=['history','open','closed','alerts','performance','backtest','settings'];$('#tabs').innerHTML=T.map(t=>`<button data-t="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('');
+ $('#tabs').onclick=e=>{if(e.target.dataset.t){TAB=e.target.dataset.t;tab()}};$('#sym').onchange=$('#tf').onchange=()=>load();$('#reload').onclick=()=>load(true);load();setInterval(()=>load(),60000)}
+async function load(force){let d;try{d=await api(`/api/snapshot?symbol=${encodeURIComponent(sym())}&tf=${tf()}${force?'&force=1':''}`)}catch(e){d={ok:false,error:{kind:'client',message:e.message}}}
+ $('#setup').hidden=!d.setup;if(d.setup){$('#status').innerHTML='';$('#signal').innerHTML='';$('#chart').innerHTML=''}else render(d);tab()}
+function render(d){
+ if(!d.ok){$('#status').innerHTML=`<b class="err">Data unavailable (${esc(d.error.kind)})</b><div>${esc(d.error.message)}</div><div class="mut">Saved history below is unaffected. No substitute prices are shown.</div>`;$('#signal').innerHTML='';$('#chart').innerHTML='';return}
+ $('#status').innerHTML=`<div class="row"><span><b>${esc(d.symbol)}</b> ${esc(d.tf)}</span><span>Last closed price <b>${f(d.symbol,d.latestClose)}</b></span><span class="mut">Candle ${tm(d.latestCandleT)}</span><span class="mut">Source ${esc(d.source)} · fetched ${tm(d.fetchedAt)}</span>
+ <span class="badge ${d.stale?'warn':''}">${d.stale?'STALE data – no new signals':'Data fresh'}</span>${d.trackingLimited?`<span class="badge warn">${d.trackingLimited} open signal(s) beyond fetched history – tracking limited</span>`:''}</div>`;
+ const L=d.levels,lab={BUY:'BUY (bullish)',SELL:'SELL (bearish)',WAIT:'WAIT (no valid setup)'}[d.signal],ix=d.indicators||{};
+ $('#signal').innerHTML=`<div class="big ${d.signal}">${lab}</div><div class="mut">Strategy ${esc(d.strategy)} · experimental rules, not a prediction or probability</div>
+ ${L?`<table><tr><th>Entry</th><th>Stop</th><th>Target</th><th>Risk dist.</th><th>Target dist.</th><th>R:R</th></tr><tr><td>${f(d.symbol,L.entry)}</td><td>${f(d.symbol,L.stop)}</td><td>${f(d.symbol,L.target)}</td><td>${f(d.symbol,Math.abs(L.entry-L.stop))}</td><td>${f(d.symbol,Math.abs(L.target-L.entry))}</td><td>${n2(L.rr)}</td></tr></table><div class="mut">Estimates from the closed candle. Real fills differ (spread, slippage, gaps, broker prices).</div>`:''}
+ <div class="row" style="margin-top:8px"><div><b>Rules</b><ul>${(d.rules||[]).map(r=>`<li>${r.pass?'✔ pass':'✘ fail'} – ${esc(r.name)}</li>`).join('')||`<li>${esc(d.reason||'none')}</li>`}</ul></div>
+ <div><b>Indicators</b><ul><li>EMA20 ${f(d.symbol,ix.e20)}</li><li>EMA50 ${f(d.symbol,ix.e50)}</li><li>EMA200 ${f(d.symbol,ix.e200)}</li><li>RSI14 ${n2(ix.rsi)}</li><li>ATR14 ${f(d.symbol,ix.atr)}</li></ul></div></div>`;
+ chart(d)}
+function chart(d){const c=d.chart.slice(-100),L=d.levels,W=720,H=320,P=48;if(!c.length){$('#chart').innerHTML='';return}
+ const v=c.flatMap(k=>[k.h,k.l]).concat(L?[L.stop,L.target]:[]),mx=Math.max(...v),mn=Math.min(...v),y=x=>8+(H-24)*(mx-x)/(mx-mn||1),bw=(W-P)/c.length,x=i=>i*bw+bw/2;let s='';
+ for(let i=0;i<=4;i++){const p=mn+(mx-mn)*i/4;s+=`<line x1="0" x2="${W-P}" y1="${y(p)}" y2="${y(p)}" stroke="currentColor" opacity=".1"/><text x="${W-P+3}" y="${y(p)+4}">${f(d.symbol,p)}</text>`}
+ c.forEach((k,i)=>{const up=k.c>=k.o,col=up?'var(--up)':'var(--dn)';s+=`<line x1="${x(i)}" x2="${x(i)}" y1="${y(k.h)}" y2="${y(k.l)}" stroke="${col}"/><rect x="${x(i)-bw*.35}" y="${y(Math.max(k.o,k.c))}" width="${bw*.7}" height="${Math.max(1,Math.abs(y(k.o)-y(k.c)))}" fill="${col}"/>`});
+ [['e20','#e8a317'],['e50','#2a7de1'],['e200','#8a5cd6']].forEach(([k,col])=>{const pts=c.map((q,i)=>q[k]==null?null:`${x(i)},${y(q[k])}`).filter(Boolean).join(' ');if(pts)s+=`<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.2"/>`});
+ if(L)[['Entry',L.entry,'currentColor'],['Stop',L.stop,'var(--dn)'],['Target',L.target,'var(--up)']].forEach(([n,p,col])=>s+=`<line x1="0" x2="${W-P}" y1="${y(p)}" y2="${y(p)}" stroke="${col}" stroke-dasharray="5 4"/><text x="4" y="${y(p)-3}">${n} ${f(d.symbol,p)}</text>`);
+ s+=`<text x="${W-P-210}" y="${H-4}">EMA20 amber · EMA50 blue · EMA200 purple</text>`;$('#chart').innerHTML=s}
+const tbl=(h,r)=>`<table><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr>${r.map(x=>`<tr>${x.map(y=>`<td>${y}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${h.length}" class="mut">Nothing yet.</td></tr>`}</table>`;
+const sigRows=a=>tbl(['Candle (local)','Pair','TF','Dir','Entry','Stop','Target','Status','R','Strategy'],a.map(s=>[tm(s.candle_t),esc(s.symbol),s.tf,`<b class="${s.dir}">${s.dir}</b>`,f(s.symbol,s.entry),f(s.symbol,s.stop),f(s.symbol,s.target),esc(s.status),s.r??'–',esc(s.strategy)]));
+const mt=(m)=>`<tr><td>${m.signals}</td><td>${m.gross.wins}/${m.gross.losses}</td><td>${m.open}/${m.ambiguous}/${m.expired}</td><td>${pc(m.gross.winRate)}</td><td>${n2(m.gross.avgR)}</td><td>${n2(m.gross.profitFactor)}</td><td>${n2(m.gross.maxDrawdownR)}</td><td>${n2(m.gross.cumulativeR)}</td></tr>`;
+const mh='<tr><th>Signals</th><th>Win/Loss</th><th>Open/Ambig./Expired</th><th>Win rate</th><th>Avg R (=expectancy)</th><th>Profit factor</th><th>Max DD (R)</th><th>Cum. R</th></tr>';
+const mgrp=(n,o)=>Object.entries(o).map(([k,v])=>`<tr><td colspan="8"><b>${n}: ${esc(k)}</b></td></tr>${mt(v)}`).join('');
+async function tab(){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===TAB));const el=$('#tab');el.textContent='Loading…';
+ try{if(TAB==='history')el.innerHTML=sigRows(await api('/api/signals'));
+ else if(TAB==='open')el.innerHTML=sigRows(await api('/api/signals?status=open'));
+ else if(TAB==='closed')el.innerHTML=sigRows(await api('/api/signals?status=closed'));
+ else if(TAB==='alerts'){const a=await api('/api/alerts');el.innerHTML=`<button id="rd">Mark all read</button>`+tbl(['Time','Type','Message'],a.map(x=>[tm(x.created_at),esc(x.type)+(x.read?'':' •'),esc(x.message)]));$('#rd').onclick=async()=>{await api('/api/alerts/read',{method:'POST'});tab()}}
+ else if(TAB==='performance'){el.innerHTML=`<div class="row"><label>From <input type="date" id="pf"></label><label>To <input type="date" id="pt"></label><button id="pg">Apply</button></div><div id="pr"></div>`;const run=async()=>{const q=new URLSearchParams();if($('#pf').value)q.set('from',Date.parse($('#pf').value));if($('#pt').value)q.set('to',Date.parse($('#pt').value)+864e5-1);const p=await api('/api/performance?'+q);
+   $('#pr').innerHTML=`<table>${mh}${mt(p.overall)}${mgrp('Pair',p.bySymbol)}${mgrp('Timeframe',p.byTimeframe)}${mgrp('Strategy',p.byStrategy)}</table><p class="mut">${esc(p.note)}</p><details><summary>Metric definitions</summary><ul><li>Resolved = target or stop reached. R = profit in units of initial risk (target = +RR, stop = −1).</li><li>Win rate = wins ÷ resolved. Open, expired and ambiguous trades are excluded and counted separately.</li><li>Expectancy = average R per resolved trade. Profit factor = total winning R ÷ total losing R.</li><li>Max drawdown = largest peak-to-trough fall of cumulative R, in signal order.</li></ul></details>`};$('#pg').onclick=run;run()}
+ else if(TAB==='backtest'){el.innerHTML=`<p class="mut">Uses real candles from your provider for the selected pair and timeframe. The first 70% of time is development data; the last 30% is out-of-sample. Do not tune parameters on the out-of-sample result.</p><div class="row"><label>From <input type="date" id="bf"></label><label>To <input type="date" id="bt"></label><label>Spread (price units) <input id="bs" type="number" step="any" min="0" value="0" style="width:90px"></label><button id="bg">Run backtest</button></div><div id="br"></div>`;
+   $('#bg').onclick=async()=>{$('#br').textContent='Running…';try{const o={symbol:sym(),tf:tf(),spread:$('#bs').value,params:CFG.params};if($('#bf').value)o.from=Date.parse($('#bf').value);if($('#bt').value)o.to=Date.parse($('#bt').value)+864e5-1;const r=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});const d=r.dataset;
+    $('#br').innerHTML=`<p>Dataset: ${esc(d.provider)} ${esc(d.symbol)} ${esc(d.tf)}, ${d.candles} closed candles, ${tm(d.first)} → ${tm(d.last)} (${d.gapsOrClosures} gaps/closures noted). Strategy ${esc(r.params.version)}.</p><table>${mh}<tr><td colspan="8"><b>Development (gross)</b></td></tr>${mt(r.development)}<tr><td colspan="8"><b>Out-of-sample (gross)</b></td></tr>${mt(r.outOfSample)}</table><p><b>Cost-adjusted (spread ${esc(r.spread)}):</b> dev cum. R ${n2(r.development.costAdjusted.cumulativeR)}, out-of-sample cum. R ${n2(r.outOfSample.costAdjusted.cumulativeR)}</p><p class="mut">${esc(r.assumptions)}</p>`}catch(e){$('#br').innerHTML=`<span class="err">${esc(e.message)}</span>`}}}
+ else if(TAB==='settings'){const p=CFG.params;el.innerHTML=`<p class="mut">Changes apply to new signals under a new strategy version. Saved signals are never rewritten.</p><div class="row"><label>RSI buy <input id="a1" value="${p.rsiBull[0]}" size="3"> – <input id="a2" value="${p.rsiBull[1]}" size="3"></label><label>RSI sell <input id="b1" value="${p.rsiBear[0]}" size="3"> – <input id="b2" value="${p.rsiBear[1]}" size="3"></label><label>Stop × ATR <input id="at" value="${p.atrStop}" size="3"></label><label>Target R <input id="rr" value="${p.rr}" size="3"></label><label>Timezone <input id="tz" value="${esc(CFG.tz)}"></label><button id="sv">Save</button></div><p id="sm" class="mut">Current: ${esc(p.version)}. ${esc(CFG.note)}</p>`;
+   $('#sv').onclick=async()=>{try{const r=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tz:$('#tz').value,params:{rsiBull:[$('#a1').value,$('#a2').value],rsiBear:[$('#b1').value,$('#b2').value],atrStop:$('#at').value,rr:$('#rr').value}})});CFG.params=r.params;CFG.tz=r.tz;$('#sm').textContent='Saved: '+r.params.version;load()}catch(e){$('#sm').textContent=e.message}}}
+ }catch(e){el.innerHTML=`<span class="err">${esc(e.message)}</span>`}}
+init().catch(e=>{$('#status').innerHTML=`<span class="err">${esc(e.message)}</span>`});
+</script></body></html>
