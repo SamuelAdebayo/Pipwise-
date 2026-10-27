@@ -106,7 +106,7 @@ function backtest(c, tf, p = DEFAULTS, o = {}) { // o.accept(i, dir) can veto a 
   for (let i = 200; i < c.length; i++) {
     if (i <= busy || (from && c[i].t < from) || (to && c[i].t > to)) continue;
     const s = signalAt(ind, c, i, p); if (s.signal === 'WAIT' || !s.levels) continue;
-    if (o.accept && !o.accept(i, s.signal)) continue;
+    if (o.accept && !o.accept(i, s.signal, s.levels)) continue;
     const r = resolve(s, c.slice(i + 1, i + 1 + maxBars), maxBars), cost = spread / s.levels.risk;
     trades.push({ t: s.t, dir: s.signal, status: r.status, r: r.r, netR: r.r == null ? null : r.r - cost, levels: s.levels });
     busy = i + r.bars;
@@ -176,6 +176,23 @@ function buildAccept(c, tf, cfg = {}, htfC = null, htfTf = null) {
       const bull = h.e50[k] > h.e200[k]; return dir === 'BUY' ? bull : !bull;
     });
   }
-  return (i, dir) => checks.every(f => f(i, dir));
+  if (cfg.pullback) { // price touched the 20 EMA within the last k candles, then resumed (the base rules already require the close back beyond it)
+    const k = cfg.pullback, ind = indicators(c);
+    checks.push((i, dir) => { for (let j = Math.max(0, i - k + 1); j <= i; j++) { const e20 = ind.e20[j]; if (e20 == null) return false; if (dir === 'BUY' ? c[j].l <= e20 : c[j].h >= e20) return true; } return false; });
+  }
+  if (cfg.sr) { // reject if a confirmed swing high (BUY) or swing low (SELL) sits closer than cfg.sr times the risk
+    const L = 5, look = 300;
+    checks.push((i, dir, lv) => {
+      if (!lv) return true; const risk = Math.abs(lv.entry - lv.stop); let near = Infinity;
+      for (let j = i - L; j >= Math.max(L, i - look); j--) { // a swing at j is only known once candle j+L has closed
+        let isH = true, isL = true;
+        for (let q = j - L; q <= j + L; q++) { if (q === j) continue; if (c[q].h >= c[j].h) isH = false; if (c[q].l <= c[j].l) isL = false; }
+        if (dir === 'BUY' && isH && c[j].h > lv.entry) near = Math.min(near, c[j].h - lv.entry);
+        if (dir === 'SELL' && isL && c[j].l < lv.entry) near = Math.min(near, lv.entry - c[j].l);
+      }
+      return near >= cfg.sr * risk;
+    });
+  }
+  return (i, dir, lv) => checks.every(f => f(i, dir, lv));
 }
 module.exports = { adx, inSession, buildAccept, sanitize, entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };

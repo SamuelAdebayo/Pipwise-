@@ -154,7 +154,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     if (closed.length < 400) throw new Error('Not enough history (need 400+ closed candles)');
     const htfTf = HTF[o.tf]; let htfC = null;
     if (htfTf) { const h = await load(o.symbol, htfTf, 5000); htfC = E.closedOnly(E.sanitize(h.candles).candles, htfTf, now()); }
-    const defs = [['base', 'Plain rules', {}], ['htf', 'Higher-timeframe trend agrees', { htf: true }], ['adx', 'Trend strength (ADX 20+)', { adx: 20 }], ['session', 'London / New York hours only', { session: true }], ['all', 'All filters together', { htf: !!htfTf, adx: 20, session: true }]];
+    const defs = [['base', 'Plain rules', {}], ['htf', 'Higher-timeframe trend agrees', { htf: true }], ['adx', 'Trend strength (ADX 20+)', { adx: 20 }], ['session', 'London / New York hours only', { session: true }], ['pullback', 'Pullback to the 20 EMA (last 5 candles)', { pullback: 5 }], ['sr', 'Room to move: no support/resistance within 1.5R', { sr: 1.5 }], ['all', 'All filters together', { htf: !!htfTf, adx: 20, session: true, pullback: 5, sr: 1.5 }]];
     const results = [];
     for (const [id, name, cfg] of defs) {
       if (cfg.htf && !htfTf) { results.push({ id, name, unavailable: 'Needs a higher timeframe, and none is available above 4h' }); continue; }
