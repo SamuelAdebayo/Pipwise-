@@ -16,6 +16,14 @@ CREATE TABLE backtests(id INTEGER PRIMARY KEY, config TEXT NOT NULL, result TEXT
  signal_t INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open', r REAL, resolved_t INTEGER);
 CREATE INDEX idx_audit_open ON audit_signals(status,symbol);`];
 
+// Columns that make up a backup file. Order matters for restore.
+const TABLES = {
+  signals: ['id', 'symbol', 'tf', 'dir', 'strategy', 'params', 'candle_t', 'provider', 'entry', 'stop', 'target', 'rr', 'indicators', 'created_at', 'status', 'r', 'resolved_t', 'assumptions'],
+  audit_signals: ['id', 'source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t', 'created_at', 'status', 'r', 'resolved_t'],
+  alerts: ['id', 'key', 'type', 'message', 'created_at', 'read', 'sent'],
+  settings: ['key', 'value'],
+  backtests: ['id', 'config', 'result', 'created_at'],
+};
 function open(path = ':memory:') {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
@@ -23,8 +31,25 @@ function open(path = ':memory:') {
   for (let i = v; i < MIGRATIONS.length; i++) { db.exec('BEGIN'); try { db.exec(MIGRATIONS[i]); db.exec(`PRAGMA user_version=${i + 1}`); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; } }
   const q = s => db.prepare(s);
   const tx = fn => { db.exec('BEGIN'); try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; } };
-  return {
+  const api = {
     close: () => db.close(), tx,
+    exportAll: () => ({ app: 'pipwise', format: 1, exportedAt: Date.now(), tables: Object.fromEntries(Object.entries(TABLES).map(([t, cols]) => [t, db.prepare(`SELECT ${cols.join(',')} FROM ${t}`).all()])) }),
+    importAll(data) { // adds missing rows only: never overwrites or deletes, and is all-or-nothing
+      if (!data || data.app !== 'pipwise' || data.format !== 1 || typeof data.tables !== 'object' || !data.tables) throw new Error('This is not a Pipwise backup file');
+      const out = {};
+      tx(() => {
+        for (const [t, cols] of Object.entries(TABLES)) {
+          const rows = data.tables[t]; if (rows === undefined) continue; if (!Array.isArray(rows)) throw new Error(`Bad backup: ${t}`);
+          const ins = db.prepare(`INSERT INTO ${t}(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')}) ON CONFLICT DO NOTHING`); let n = 0;
+          for (const r of rows) {
+            if (!r || typeof r !== 'object') throw new Error(`Bad backup row in ${t}`);
+            n += ins.run(...cols.map(c => { const v = r[c]; if (v === undefined || v === null || typeof v === 'number' || typeof v === 'string') return v === undefined ? null : v; throw new Error(`Bad value in ${t}.${c}`); })).changes;
+          }
+          out[t] = n;
+        }
+      });
+      return out;
+    },
     addSignal(s) {
       const r = q(`INSERT OR IGNORE INTO signals(symbol,tf,dir,strategy,params,candle_t,provider,entry,stop,target,rr,indicators,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(s.symbol, s.tf, s.dir, s.strategy, JSON.stringify(s.params), s.candle_t, s.provider, s.entry, s.stop, s.target, s.rr, JSON.stringify(s.indicators), s.created_at);
@@ -54,5 +79,7 @@ function open(path = ':memory:') {
     saveBacktest: (config, result, now) => Number(q(`INSERT INTO backtests(config,result,created_at) VALUES(?,?,?)`).run(JSON.stringify(config), JSON.stringify(result), now).lastInsertRowid),
     listBacktests: () => q(`SELECT id,config,created_at FROM backtests ORDER BY id DESC LIMIT 20`).all(),
   };
+  if (!api.getSetting('db_created_at')) api.setSetting('db_created_at', Date.now()); // shows when this database file was first created
+  return api;
 }
 module.exports = { open };
