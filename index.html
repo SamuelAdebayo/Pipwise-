@@ -1,83 +1,149 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pipwise</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Pipwise</title>
 <style>
-:root{--bg:#f7f7f5;--card:#fff;--tx:#1b1b1a;--mut:#6b6b66;--bd:#dcdcd6;--up:#117a4d;--dn:#b3261e;--warn:#9a6700;--ac:#1f4fd8}
-@media(prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--tx:#ececE8;--mut:#9a9a93;--bd:#35352f;--up:#4cc38a;--dn:#ff7b72;--warn:#e3b341;--ac:#7aa2ff}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
-header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:12px 14px}h1{font-size:20px;margin:0}
-main{max-width:900px;margin:auto;padding:0 12px 24px;display:grid;gap:12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;overflow-x:auto}
-select,input,button{font:inherit;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--card);color:var(--tx)}button{cursor:pointer;background:var(--ac);color:#fff;border:0}
-.row{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}.mut{color:var(--mut)}.badge{padding:2px 8px;border-radius:99px;border:1px solid var(--bd);font-size:13px}
-.BUY{color:var(--up)}.SELL{color:var(--dn)}.big{font-size:26px;font-weight:700}.warn{color:var(--warn)}.err{color:var(--dn)}
-table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:5px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
-nav{display:flex;gap:6px;flex-wrap:wrap}nav button{background:var(--card);color:var(--tx);border:1px solid var(--bd)}nav button.on{background:var(--ac);color:#fff}
-svg text{fill:var(--mut);font-size:11px}label{display:inline-flex;gap:4px;align-items:center}ul{margin:4px 0;padding-left:18px}
+:root{--bg:#f6f6f3;--card:#fff;--tx:#1b1b1a;--mut:#66665f;--bd:#dcdcd5;--up:#117a4d;--dn:#b3261e;--warn:#9a6700;--ac:#1f4fd8}
+@media(prefers-color-scheme:dark){:root{--bg:#121211;--card:#1e1e1c;--tx:#ecece8;--mut:#9d9d95;--bd:#363630;--up:#4cc38a;--dn:#ff7b72;--warn:#e3b341;--ac:#7aa2ff}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--bd);padding:calc(env(safe-area-inset-top) + 8px) 14px 8px;display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+h1{font-size:20px;margin:0}header small{color:var(--mut);font-size:12px}
+main{max-width:640px;margin:auto;padding:12px 12px calc(96px + env(safe-area-inset-bottom));display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;overflow-x:auto}
+nav#bar{position:fixed;bottom:0;left:0;right:0;z-index:6;display:flex;background:var(--card);border-top:1px solid var(--bd);padding-bottom:env(safe-area-inset-bottom)}
+nav#bar a{flex:1;text-align:center;padding:11px 2px;color:var(--mut);text-decoration:none;font-size:13px}nav#bar a.on{color:var(--ac);font-weight:700}
+select,input,button{font:inherit;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--tx);max-width:100%}
+button{background:var(--ac);color:#fff;border:0;cursor:pointer}button:disabled{opacity:.6}button.ghost{background:var(--card);color:var(--tx);border:1px solid var(--bd)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.sp{justify-content:space-between}.mut{color:var(--mut)}.note{font-size:13px;margin-top:8px}.warn{color:var(--warn)}.err{color:var(--dn)}
+.big{font-size:34px;font-weight:800;line-height:1.1;margin:4px 0}.BUY{color:var(--up)}.SELL{color:var(--dn)}
+.chip{display:inline-block;padding:2px 9px;border-radius:99px;border:1px solid var(--bd);font-size:12px;font-weight:700;white-space:nowrap}.chip.ok{color:var(--up);border-color:var(--up)}.chip.warn{color:var(--warn);border-color:var(--warn)}.chip.BUY{border-color:var(--up)}.chip.SELL{border-color:var(--dn)}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:10px 0}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0}.kv span{display:block;font-size:12px;color:var(--mut)}.kv b{font-size:17px}
+.check{margin:10px 0;padding:10px;border:1px solid var(--bd);border-radius:10px}
+.seg{display:flex;gap:6px}.seg a{flex:1;text-align:center;padding:9px 4px;border:1px solid var(--bd);border-radius:10px;color:var(--tx);text-decoration:none;background:var(--card);font-size:14px}.seg a.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.trow{display:flex;gap:10px;align-items:baseline;padding:9px 0;border-top:1px solid var(--bd)}.trow>b{min-width:48px}
+table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:6px 4px;border-bottom:1px solid var(--bd);text-align:left}th{color:var(--mut);font-weight:600}td:not(:first-child),th:not(:first-child){text-align:right}
+label{display:block;margin:8px 0 2px;font-size:13px;color:var(--mut)}input,select{width:100%}.row select{width:auto;flex:1}
+summary{cursor:pointer;font-weight:600}p{margin:6px 0}svg text{fill:var(--mut);font-size:11px}h2{font-size:17px;margin:0 0 4px}
 </style></head><body>
-<header><h1>Pipwise <span class="mut" style="font-size:13px">analysis &amp; paper tracking · no live trading</span></h1>
-<div class="row"><select id="sym" aria-label="Instrument"></select><select id="tf" aria-label="Timeframe"></select><button id="reload">Refresh</button><span id="chk" class="mut" style="font-size:13px"></span><span id="clock" class="mut" style="font-size:13px"></span></div></header>
-<main>
-<section id="setup" class="card" hidden><b>Setup needed</b><p>No market-data key is configured, so Pipwise shows no prices (it never invents them). Set <code>TWELVEDATA_API_KEY</code> on the server and restart. See README.</p></section>
-<section id="status" class="card"></section>
-<section id="signal" class="card"></section>
-<section id="scan" class="card"></section>
-<section class="card"><svg id="chart" viewBox="0 0 720 320" width="100%" role="img" aria-label="Candlestick chart"></svg></section>
-<section class="card"><nav id="tabs"></nav><div id="tab" style="margin-top:10px"></div></section>
-</main>
+<header><h1>Pipwise</h1><small>Paper trading and analysis · no live orders <span id="clock"></span></small></header>
+<main id="view"><div class="card mut">Loading…</div></main>
+<nav id="bar"></nav>
 <script>
-const $=s=>document.querySelector(s);let CFG,TAB='history';
+const $=s=>document.querySelector(s);let CFG;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api=async(p,o)=>{const r=await fetch(p,o),j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j};
-const dp=s=>s.includes('JPY')?3:s.startsWith('XAU')?2:5,f=(s,x)=>x==null?'–':Number(x).toFixed(dp(s)),n2=x=>x==null?'–':Number(x).toFixed(2),pc=x=>x==null?'–':(x*100).toFixed(1)+'%';
+const post=(p,b)=>api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
+let S={sym:'EUR/USD',tf:'4h'};try{Object.assign(S,JSON.parse(localStorage.getItem('pw')||'{}'))}catch(e){}
+const keep=()=>{try{localStorage.setItem('pw',JSON.stringify(S))}catch(e){}};
+const TFM={'15min':15,'1h':60,'4h':240},TYP={'EUR/USD':0.00008,'GBP/USD':0.0001,'USD/JPY':0.008,'GBP/JPY':0.02,'XAU/USD':0.3};
+const dp=s=>s.includes('JPY')?3:s.startsWith('XAU')?2:5,f=(s,x)=>x==null?'–':Number(x).toFixed(dp(s)),n2=x=>x==null?'–':Number(x).toFixed(2),pc=x=>x==null?'–':(x*100).toFixed(0)+'%';
+const R=r=>r==null?'–':(r>0?'+':'')+Number(r).toFixed(2)+'R';
 const tm=t=>t?new Intl.DateTimeFormat([],{timeZone:CFG.tz,dateStyle:'medium',timeStyle:'short'}).format(t):'–';
-const sym=()=>$('#sym').value,tf=()=>$('#tf').value,TFM={'15min':15,'1h':60,'4h':240};
 const tmS=t=>new Intl.DateTimeFormat([],{timeZone:CFG.tz,timeStyle:'medium'}).format(t);
-setInterval(()=>{if(CFG)$('#clock').textContent=' · Now '+tmS(Date.now())+' ('+CFG.tz+')'},1000);
-async function init(){CFG=await api('/api/config');$('#sym').innerHTML=CFG.instruments.map(i=>`<option>${esc(i)}</option>`).join('');$('#tf').innerHTML=CFG.timeframes.map(i=>`<option>${esc(i)}</option>`).join('');
- const T=['history','open','closed','alerts','performance','backtest','settings'];$('#tabs').innerHTML=T.map(t=>`<button data-t="${t}">${t[0].toUpperCase()+t.slice(1)}</button>`).join('');
- $('#tabs').onclick=e=>{if(e.target.dataset.t){TAB=e.target.dataset.t;tab()}};$('#sym').onchange=$('#tf').onchange=()=>load();$('#reload').onclick=()=>load(true);load();setInterval(()=>load(),60000)}
-async function load(force){const b=$('#reload');if(force){b.disabled=true;b.textContent='Refreshing…'}let d;try{d=await api(`/api/snapshot?symbol=${encodeURIComponent(sym())}&tf=${tf()}${force?'&force=1':''}`)}catch(e){d={ok:false,error:{kind:'client',message:e.message}}}
- $('#setup').hidden=!d.setup;if(d.setup){$('#status').innerHTML='';$('#signal').innerHTML='';$('#chart').innerHTML=''}else render(d);tab();scan();b.disabled=false;b.textContent='Refresh';$('#chk').textContent='Checked '+new Date().toLocaleTimeString([],{timeZone:CFG.tz})+(d.ok?(d.stale?' · stale':' · ok'):' · error')}
-function render(d){
- if(!d.ok){$('#status').innerHTML=`<b class="err">Data unavailable (${esc(d.error.kind)})</b><div>${esc(d.error.message)}</div><div class="mut">Saved history below is unaffected. No substitute prices are shown.</div>`;$('#signal').innerHTML='';$('#chart').innerHTML='';return}
- $('#status').innerHTML=`<div class="row"><span><b>${esc(d.symbol)}</b> ${esc(d.tf)}</span><span>Price now <b>${f(d.symbol,d.livePrice)}</b> <span class="mut">${d.live?"(current candle)":"(market closed – last close)"}</span></span><span class="mut">Last closed candle ended ${tm(d.latestCandleT+TFM[d.tf]*60000)} · close ${f(d.symbol,d.latestClose)}</span><span class="mut">Source ${esc(d.source)} · fetched ${new Intl.DateTimeFormat([],{timeZone:CFG.tz,timeStyle:'medium'}).format(d.fetchedAt)}</span>
- <span class="badge ${d.stale?'warn':''}">${d.stale?'STALE data – no new signals':'Data fresh'}</span>${d.excludedCandles?`<span class="badge warn">${d.excludedCandles} bad candle(s) from provider excluded</span>`:''}${d.trackingLimited?`<span class="badge warn">${d.trackingLimited} open signal(s) beyond fetched history – tracking limited</span>`:''}</div>`;
- const L=d.levels,lab={BUY:'BUY (bullish)',SELL:'SELL (bearish)',WAIT:'WAIT (no valid setup)'}[d.signal],ix=d.indicators||{};
- $('#signal').innerHTML=`<div class="big ${d.signal}">${lab}</div><div class="mut">Strategy ${esc(d.strategy)} · experimental rules, not a prediction or probability</div>${d.entryCheck?`<div style="margin:8px 0"><span class="badge">Entry check: ${esc(d.entryCheck.state)}</span> ${esc(d.entryCheck.text)}<div class="mut">Signal candle closed ${tm(d.latestCandleT+TFM[d.tf]*60000)}</div></div>`:''}
- ${L?`<table><tr><th>Entry</th><th>Stop</th><th>Target</th><th>Risk dist.</th><th>Target dist.</th><th>R:R</th></tr><tr><td>${f(d.symbol,L.entry)}</td><td>${f(d.symbol,L.stop)}</td><td>${f(d.symbol,L.target)}</td><td>${f(d.symbol,Math.abs(L.entry-L.stop))}</td><td>${f(d.symbol,Math.abs(L.target-L.entry))}</td><td>${n2(L.rr)}</td></tr></table><div class="mut">Estimates from the closed candle. Real fills differ (spread, slippage, gaps, broker prices).</div>`:''}
- <div class="row" style="margin-top:8px"><div><b>Rules</b><ul>${(d.rules||[]).map(r=>`<li>${r.pass?'✔ pass':'✘ fail'} – ${esc(r.name)}</li>`).join('')||`<li>${esc(d.reason||'none')}</li>`}</ul></div>
- <div><b>Indicators</b><ul><li>EMA20 ${f(d.symbol,ix.e20)}</li><li>EMA50 ${f(d.symbol,ix.e50)}</li><li>EMA200 ${f(d.symbol,ix.e200)}</li><li>RSI14 ${n2(ix.rsi)}</li><li>ATR14 ${f(d.symbol,ix.atr)}</li></ul></div></div>`;
+const opts=(a,sel)=>a.map(x=>`<option${x===sel?' selected':''}>${esc(x)}</option>`).join('');
+const pairSel=(tf=true)=>`<select id="sym" aria-label="Pair">${opts(CFG.instruments,S.sym)}</select>${tf?`<select id="tf" aria-label="Timeframe">${opts(CFG.timeframes,S.tf)}</select>`:''}`;
+const bindSel=fn=>{$('#sym').onchange=()=>{S.sym=$('#sym').value;keep();fn()};if($('#tf'))$('#tf').onchange=()=>{S.tf=$('#tf').value;keep();fn()}};
+const seg=(base,items,cur)=>`<div class="seg">${items.map(([k,l])=>`<a href="#${base}/${k}" class="${k===cur?'on':''}">${l}</a>`).join('')}</div>`;
+const metricLine=m=>m.resolved?`${m.resolved} finished · win ${pc(m.winRate)} · avg ${R(m.avgR)} · profit factor ${n2(m.profitFactor)} · worst drop ${n2(m.maxDrawdownR)}R · total ${R(m.cumulativeR)}`:'No finished trades yet';
+function zonedToUtc(s,tz){const m=/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)/.exec(s);if(!m)return NaN;const g=Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5]);
+ const off=t=>{const p=new Intl.DateTimeFormat('en-US',{timeZone:tz,hourCycle:'h23',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(new Date(t));const q=k=>+p.find(x=>x.type===k).value;return Date.UTC(q('year'),q('month')-1,q('day'),q('hour'),q('minute'),q('second'))-t};return g-off(g-off(g))}
+const nowLocal=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:CFG.tz,dateStyle:'short',timeStyle:'short'}).format(new Date()).replace(' ','T');
+
+/* ---------- router ---------- */
+const PAGES={home,trades,lab,audit,more};let page='home';
+const NAV=[['home','Home'],['trades','Trades'],['lab','Lab'],['audit','Audit'],['more','More']];
+async function route(){if(!CFG)return;const [p,sub]=(location.hash||'#home').slice(1).split('/');page=PAGES[p]?p:'home';
+ document.querySelectorAll('#bar a').forEach(a=>a.classList.toggle('on',a.dataset.p===page));
+ $('#view').innerHTML='<div class="card mut">Loading…</div>';try{await PAGES[page](sub)}catch(e){$('#view').innerHTML=`<div class="card err">${esc(e.message)}</div>`}window.scrollTo(0,0)}
+async function init(){CFG=await api('/api/config');$('#bar').innerHTML=NAV.map(([k,l])=>`<a href="#${k}" data-p="${k}">${l}</a>`).join('');
+ if(!CFG.instruments.includes(S.sym))S.sym=CFG.instruments[0];if(!CFG.timeframes.includes(S.tf))S.tf=CFG.timeframes[0];
+ window.addEventListener('hashchange',route);setInterval(()=>{$('#clock').textContent='· '+tmS(Date.now())+' '+CFG.tz},1000);
+ setInterval(()=>{if(!document.hidden&&page==='home'&&$('#sig')){loadHome(false);loadScan()}},120000);route()}
+
+/* ---------- HOME: what is the signal right now ---------- */
+async function home(){$('#view').innerHTML=`<div class="card"><div class="row">${pairSel()}<button id="rf">Refresh</button></div><div id="stat" style="margin-top:8px" class="mut">Loading…</div></div>
+ <div class="card" id="sig"></div><div class="card" id="scan"><h2>All timeframes</h2><div class="mut">Loading…</div></div><div class="card" id="cht"></div>
+ <details class="card" id="why"><summary>Why this signal? Rules and indicators</summary><div id="whyb"></div></details>`;
+ bindSel(home);$('#rf').onclick=()=>{loadHome(true);loadScan()};loadHome(false);loadScan()}
+async function loadHome(force){let d;try{d=await api(`/api/snapshot?symbol=${encodeURIComponent(S.sym)}&tf=${S.tf}${force?'&force=1':''}`)}catch(e){d={ok:false,error:{kind:'client',message:e.message}}}
+ const b=$('#rf');if(!b||!$('#sig'))return;
+ if(d.setup){$('#stat').textContent='';$('#sig').innerHTML='<h2>Setup needed</h2><p>No market-data key is set on the server, so no prices are shown. Add TWELVEDATA_API_KEY and restart.</p>';return}
+ if(!d.ok){$('#stat').innerHTML=`<span class="chip warn">ERROR</span> ${esc(d.error.kind)} · checked ${tmS(Date.now())}`;$('#sig').innerHTML=`<div class="big err">No data</div><p>${esc(d.error.message)}</p><p class="mut">No prices are invented. Your saved trades are safe.</p>`;$('#cht').innerHTML='';$('#why').hidden=true;return}
+ $('#why').hidden=false;
+ const st=d.fromCache?['CACHED','warn',`Showing saved data (${d.cacheAgeSec}s old) because of the provider limit.`]:d.stale?['STALE','warn','The latest candle is older than expected, so no new signals are created.']:['FRESH','ok','Data is up to date.'];
+ $('#stat').innerHTML=`<span class="chip ${st[1]}">${st[0]}</span> ${esc(st[2])}<br>Price now <b>${f(d.symbol,d.livePrice)}</b>${d.live?'':' (market closed, last close)'} · last candle closed ${tm(d.latestCandleT+TFM[d.tf]*60000)} · checked ${tmS(Date.now())}${d.excludedCandles?`<br><span class="warn">${d.excludedCandles} bad candle(s) from the provider were skipped.</span>`:''}`;
+ const L=d.levels,failed=(d.rules||[]).filter(r=>!r.pass).map(r=>r.name),lab={BUY:'BUY ▲',SELL:'SELL ▼',WAIT:'WAIT'}[d.signal];
+ $('#sig').innerHTML=`<div class="mut">${esc(d.symbol)} · ${esc(d.tf)} chart</div><div class="big ${d.signal}">${lab}</div><div>${d.signal==='WAIT'?esc(d.reason?'Not enough price history yet.':'No trade. Not met: '+failed.join('; ')):'All 4 rules pass on the latest closed candle.'}</div>`
+  +(d.entryCheck?`<div class="check"><span class="chip">${esc(d.entryCheck.state)}</span> ${esc(d.entryCheck.text)}</div>`:'')
+  +(L?`<div class="grid"><div class="kv"><span>Entry</span><b>${f(d.symbol,L.entry)}</b></div><div class="kv"><span>Reward : risk</span><b>${n2(L.rr)} : 1</b></div><div class="kv"><span>Stop loss</span><b>${f(d.symbol,L.stop)}</b></div><div class="kv"><span>Take profit</span><b>${f(d.symbol,L.target)}</b></div></div><div class="mut">Signal candle closed ${tm(d.latestCandleT+TFM[d.tf]*60000)}. Real fills differ (spread, slippage).</div>`:'')
+  +`<div class="mut note">Experimental rules. This is not a prediction or a probability of winning.</div>`;
+ const x=d.indicators||{};$('#whyb').innerHTML=`<ul>${(d.rules||[]).map(r=>`<li>${r.pass?'✔ passes':'✘ fails'}: ${esc(r.name)}</li>`).join('')}</ul><table><tr><td>EMA 20</td><td>${f(d.symbol,x.e20)}</td></tr><tr><td>EMA 50</td><td>${f(d.symbol,x.e50)}</td></tr><tr><td>EMA 200</td><td>${f(d.symbol,x.e200)}</td></tr><tr><td>RSI 14</td><td>${n2(x.rsi)}</td></tr><tr><td>ATR 14</td><td>${f(d.symbol,x.atr)}</td></tr></table><div class="mut note">Strategy ${esc(d.strategy)}</div>`;
  chart(d)}
-function chart(d){const c=d.chart.slice(-100),L=d.levels,W=720,H=320,P=48;if(!c.length){$('#chart').innerHTML='';return}
- const v=c.flatMap(k=>[k.h,k.l]).concat(L?[L.stop,L.target]:[]),mx=Math.max(...v),mn=Math.min(...v),y=x=>8+(H-24)*(mx-x)/(mx-mn||1),bw=(W-P)/c.length,x=i=>i*bw+bw/2;let s='';
+function chart(d){const c=d.chart.slice(-90),L=d.levels,W=720,H=300,P=50;if(!c.length){$('#cht').innerHTML='';return}
+ const v=c.flatMap(k=>[k.h,k.l]).concat(L?[L.stop,L.target]:[]),mx=Math.max(...v),mn=Math.min(...v),y=x=>8+(H-26)*(mx-x)/(mx-mn||1),bw=(W-P)/c.length,x=i=>i*bw+bw/2;let s='';
  for(let i=0;i<=4;i++){const p=mn+(mx-mn)*i/4;s+=`<line x1="0" x2="${W-P}" y1="${y(p)}" y2="${y(p)}" stroke="currentColor" opacity=".1"/><text x="${W-P+3}" y="${y(p)+4}">${f(d.symbol,p)}</text>`}
  c.forEach((k,i)=>{const up=k.c>=k.o,col=up?'var(--up)':'var(--dn)';s+=`<line x1="${x(i)}" x2="${x(i)}" y1="${y(k.h)}" y2="${y(k.l)}" stroke="${col}"/><rect x="${x(i)-bw*.35}" y="${y(Math.max(k.o,k.c))}" width="${bw*.7}" height="${Math.max(1,Math.abs(y(k.o)-y(k.c)))}" fill="${col}"/>`});
  [['e20','#e8a317'],['e50','#2a7de1'],['e200','#8a5cd6']].forEach(([k,col])=>{const pts=c.map((q,i)=>q[k]==null?null:`${x(i)},${y(q[k])}`).filter(Boolean).join(' ');if(pts)s+=`<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.2"/>`});
  if(L)[['Entry',L.entry,'currentColor'],['Stop',L.stop,'var(--dn)'],['Target',L.target,'var(--up)']].forEach(([n,p,col])=>s+=`<line x1="0" x2="${W-P}" y1="${y(p)}" y2="${y(p)}" stroke="${col}" stroke-dasharray="5 4"/><text x="4" y="${y(p)-3}">${n} ${f(d.symbol,p)}</text>`);
- s+=`<text x="${W-P-210}" y="${H-4}">EMA20 amber · EMA50 blue · EMA200 purple</text>`;$('#chart').innerHTML=s}
-const tbl=(h,r)=>`<table><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr>${r.map(x=>`<tr>${x.map(y=>`<td>${y}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${h.length}" class="mut">Nothing yet.</td></tr>`}</table>`;
-const res=s=>({open:'Open',target:`Target hit +${s.r}R`,stop:`Stop hit ${s.r}R`,ambiguous:'Ambiguous (both hit)',expired:'Expired'}[s.status]||s.status);
-const sigRows=(a,m)=>tbl(['Signal time','Pair','TF','Dir','Entry','Stop','Target','Result'].concat(m==='open'?['Entry check']:m==='closed'?['Closed']:[]),a.map(s=>[tm(s.candle_t+TFM[s.tf]*60000),esc(s.symbol),s.tf,`<b class="${s.dir}">${s.dir}</b>`,f(s.symbol,s.entry),f(s.symbol,s.stop),f(s.symbol,s.target),esc(res(s))].concat(m==='open'?[s.check?`<b>${esc(s.check.state)}</b> ${esc(s.check.text)}`:'–']:m==='closed'?[s.resolved_t?tm(s.resolved_t+TFM[s.tf]*60000):'–']:[])));
-async function scan(){const el=$('#scan');if(!CFG)return;try{const rows=await api('/api/scan?symbol='+encodeURIComponent(sym()));if(!rows.length){el.innerHTML='';return}
+ $('#cht').innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Candlestick chart"><g>${s}</g><text x="4" y="${H-4}">EMA20 amber · EMA50 blue · EMA200 purple</text></svg>`}
+async function loadScan(){let rows;try{rows=await api('/api/scan?symbol='+encodeURIComponent(S.sym))}catch(e){if($('#scan'))$('#scan').innerHTML=`<h2>All timeframes</h2><span class="err">${esc(e.message)}</span>`;return}
+ const el=$('#scan');if(!el)return;if(!rows.length){el.innerHTML='';return}
  const ok=new Set();rows.forEach(r=>{if(!r.ok)return;if(r.signal!=='WAIT'&&r.entryCheck&&r.entryCheck.state==='ENTER')ok.add(`${r.tf} ${r.signal}`);(r.open||[]).forEach(o=>{if(o.check.state==='ENTER')ok.add(`${r.tf} ${o.dir}`)})});
  const dirs=new Set([...ok].map(x=>x.split(' ')[1]));
- el.innerHTML=`<b>${esc(sym())}: all timeframes</b><div style="margin:6px 0">${ok.size?`Valid entries now: <b>${esc([...ok].join(', '))}</b>${ok.size>1&&dirs.size===1?' – timeframes agree on direction':dirs.size>1?' – timeframes disagree':''}`:'No valid entry right now on any timeframe.'}</div>`+
- tbl(['TF','Latest candle','Active signal and entry check'],rows.map(r=>!r.ok?[r.tf,'–',`<span class="err">${esc(r.error.message)}</span>`]:[r.tf,`<b class="${r.signal}">${r.signal}</b>${r.stale?' (stale)':''}`,(r.open.length?r.open.map(o=>`${o.dir} @ ${f(sym(),o.entry)} since ${tm(o.signalT)} – <b>${esc(o.check.state)}</b> ${esc(o.check.text)}`).join('<br>'):r.signal!=='WAIT'&&r.entryCheck?`<b>${esc(r.entryCheck.state)}</b> ${esc(r.entryCheck.text)}`:'–')]))+`<div class="mut">A listed timeframe is not a prediction. "Entry check" only tests whether price is still close enough to the original entry to keep the planned risk:reward.</div>`}catch(e){el.innerHTML=`<span class="err">${esc(e.message)}</span>`}}
-const mt=(m)=>`<tr><td>${m.signals}</td><td>${m.gross.wins}/${m.gross.losses}</td><td>${m.open}/${m.ambiguous}/${m.expired}</td><td>${pc(m.gross.winRate)}</td><td>${n2(m.gross.avgR)}</td><td>${n2(m.gross.profitFactor)}</td><td>${n2(m.gross.maxDrawdownR)}</td><td>${n2(m.gross.cumulativeR)}</td></tr>`;
-const mh='<tr><th>Signals</th><th>Win/Loss</th><th>Open/Ambig./Expired</th><th>Win rate</th><th>Avg R (=expectancy)</th><th>Profit factor</th><th>Max DD (R)</th><th>Cum. R</th></tr>';
-const mgrp=(n,o)=>Object.entries(o).map(([k,v])=>`<tr><td colspan="8"><b>${n}: ${esc(k)}</b></td></tr>${mt(v)}`).join('');
-async function tab(){document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===TAB));const el=$('#tab');el.textContent='Loading…';
- try{if(TAB==='history')el.innerHTML=sigRows(await api('/api/signals'),'history');
- else if(TAB==='open')el.innerHTML=sigRows(await api('/api/signals?status=open'),'open');
- else if(TAB==='closed'){const c=await api('/api/signals?status=closed'),done=c.filter(s=>s.r!=null),t=done.reduce((a,s)=>a+s.r,0);el.innerHTML=`<p><b>${done.length}</b> resolved trades, total <b>${t>=0?'+':''}${t.toFixed(2)}R</b> (gross, before spread). Ambiguous and expired are not counted.</p>`+sigRows(c,'closed')}
- else if(TAB==='alerts'){const a=await api('/api/alerts');el.innerHTML=`<button id="rd">Mark all read</button>`+tbl(['Time','Type','Message'],a.map(x=>[tm(x.created_at),esc(x.type)+(x.read?'':' •'),esc(x.message)]));$('#rd').onclick=async()=>{await api('/api/alerts/read',{method:'POST'});tab()}}
- else if(TAB==='performance'){el.innerHTML=`<div class="row"><label>From <input type="date" id="pf"></label><label>To <input type="date" id="pt"></label><button id="pg">Apply</button></div><div id="pr"></div>`;const run=async()=>{const q=new URLSearchParams();if($('#pf').value)q.set('from',Date.parse($('#pf').value));if($('#pt').value)q.set('to',Date.parse($('#pt').value)+864e5-1);const p=await api('/api/performance?'+q);
-   $('#pr').innerHTML=`<table>${mh}${mt(p.overall)}${mgrp('Pair',p.bySymbol)}${mgrp('Timeframe',p.byTimeframe)}${mgrp('Strategy',p.byStrategy)}</table><p class="mut">${esc(p.note)}</p><details><summary>Metric definitions</summary><ul><li>Resolved = target or stop reached. R = profit in units of initial risk (target = +RR, stop = −1).</li><li>Win rate = wins ÷ resolved. Open, expired and ambiguous trades are excluded and counted separately.</li><li>Expectancy = average R per resolved trade. Profit factor = total winning R ÷ total losing R.</li><li>Max drawdown = largest peak-to-trough fall of cumulative R, in signal order.</li></ul></details>`};$('#pg').onclick=run;run()}
- else if(TAB==='backtest'){el.innerHTML=`<p class="mut">Uses real candles from your provider for the selected pair and timeframe. The first 70% of time is development data; the last 30% is out-of-sample. Do not tune parameters on the out-of-sample result.</p><div class="row"><label>From <input type="date" id="bf"></label><label>To <input type="date" id="bt"></label><label>Spread (price units) <input id="bs" type="number" step="any" min="0" value="0" style="width:90px"></label><button id="bg">Run backtest</button></div><div id="br"></div>`;
-   $('#bg').onclick=async()=>{$('#br').textContent='Running…';try{const o={symbol:sym(),tf:tf(),spread:$('#bs').value,params:CFG.params};if($('#bf').value)o.from=Date.parse($('#bf').value);if($('#bt').value)o.to=Date.parse($('#bt').value)+864e5-1;const r=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});const d=r.dataset;
-    $('#br').innerHTML=`<p>Dataset: ${esc(d.provider)} ${esc(d.symbol)} ${esc(d.tf)}, ${d.candles} closed candles, ${tm(d.first)} → ${tm(d.last)} (${d.gapsOrClosures} gaps/closures noted${d.excludedCandles?`; ${d.excludedCandles} invalid candle(s) from the provider were excluded`:''}). Strategy ${esc(r.params.version)}.</p><table>${mh}<tr><td colspan="8"><b>Development (gross)</b></td></tr>${mt(r.development)}<tr><td colspan="8"><b>Out-of-sample (gross)</b></td></tr>${mt(r.outOfSample)}</table><p><b>Cost-adjusted (spread ${esc(r.spread)}):</b> dev cum. R ${n2(r.development.costAdjusted.cumulativeR)}, out-of-sample cum. R ${n2(r.outOfSample.costAdjusted.cumulativeR)}</p><p class="mut">${esc(r.assumptions)}</p>`}catch(e){$('#br').innerHTML=`<span class="err">${esc(e.message)}</span>`}}}
- else if(TAB==='settings'){const p=CFG.params;el.innerHTML=`<p class="mut">Changes apply to new signals under a new strategy version. Saved signals are never rewritten.</p><div class="row"><label>RSI buy <input id="a1" value="${p.rsiBull[0]}" size="3"> – <input id="a2" value="${p.rsiBull[1]}" size="3"></label><label>RSI sell <input id="b1" value="${p.rsiBear[0]}" size="3"> – <input id="b2" value="${p.rsiBear[1]}" size="3"></label><label>Stop × ATR <input id="at" value="${p.atrStop}" size="3"></label><label>Target R <input id="rr" value="${p.rr}" size="3"></label><label>Timezone <input id="tz" value="${esc(CFG.tz)}"></label><button id="sv">Save</button></div><p id="sm" class="mut">Current: ${esc(p.version)}. ${esc(CFG.note)}</p><hr><b>Telegram alerts</b> <span class="mut">(${CFG.telegram.token&&CFG.telegram.chat?'on':CFG.telegram.token?'token set, chat ID missing':'not set up'})</span><div class="row" style="margin-top:6px"><button id="tgf">Find my chat ID</button><button id="tgt">Send test message</button></div><p id="tgm" class="mut">Alerts: new signals, outcomes, data errors. Keys are set on the server.</p>`;
-   const tgc=async(u,o,ok)=>{try{const r=await api(u,o);$('#tgm').textContent=ok(r)}catch(e){$('#tgm').textContent=e.message}};$('#tgf').onclick=()=>tgc('/api/telegram/chat-id',undefined,r=>'Your chat ID: '+r.chatId+' – set it as TELEGRAM_CHAT_ID on the server.');$('#tgt').onclick=()=>tgc('/api/telegram/test',{method:'POST'},()=>'Test message sent. Check Telegram.');
-   $('#sv').onclick=async()=>{try{const r=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tz:$('#tz').value,params:{rsiBull:[$('#a1').value,$('#a2').value],rsiBear:[$('#b1').value,$('#b2').value],atrStop:$('#at').value,rr:$('#rr').value}})});CFG.params=r.params;CFG.tz=r.tz;$('#sm').textContent='Saved: '+r.params.version;load()}catch(e){$('#sm').textContent=e.message}}}
- }catch(e){el.innerHTML=`<span class="err">${esc(e.message)}</span>`}}
-init().catch(e=>{$('#status').innerHTML=`<span class="err">${esc(e.message)}</span>`});
+ el.innerHTML=`<h2>${esc(S.sym)}: all timeframes</h2><div>${ok.size?`Valid entries now: <b>${esc([...ok].join(', '))}</b>${ok.size>1&&dirs.size===1?'. They point the same way, but they are one idea seen at different zoom levels, not extra proof.':dirs.size>1?'. The timeframes disagree.':''}`:'No valid entry right now on any timeframe.'}</div>`
+ +rows.map(r=>!r.ok?`<div class="trow"><b>${r.tf}</b><span class="err">${esc(r.error.message)}</span></div>`:`<div class="trow"><b>${r.tf}</b><span class="chip ${r.signal}">${r.signal}</span><span>${r.open.length?r.open.map(o=>`${o.dir} from ${tm(o.signalT)}: <b>${esc(o.check.state)}</b>`).join('<br>'):r.signal!=='WAIT'&&r.entryCheck?`<b>${esc(r.entryCheck.state)}</b>`:'<span class="mut">no setup</span>'}</span></div>`).join('')
+ +'<div class="mut note">ENTER means price is still close enough to the original entry. It does not mean the trade will win.</div>'}
+
+/* ---------- TRADES: open, closed, all ---------- */
+const resText=s=>({open:'OPEN',target:'WIN '+R(s.r),stop:'LOSS '+R(s.r),ambiguous:'UNCLEAR (stop and target in one candle)',expired:'EXPIRED',unverified:'NOT VERIFIABLE',untrackable:'TOO OLD TO CHECK'}[s.status]||s.status);
+const tradeCard=s=>`<div class="card"><div class="row sp"><b class="${s.dir}">${s.dir==='BUY'?'BUY ▲':'SELL ▼'}</b><span>${esc(s.symbol)} · ${esc(s.tf||'')}</span><span class="chip">${esc(resText(s))}</span></div>
+ <div class="grid3"><div class="kv"><span>Entry</span><b>${f(s.symbol,s.entry)}</b></div><div class="kv"><span>Stop</span><b>${f(s.symbol,s.stop)}</b></div><div class="kv"><span>Target</span><b>${f(s.symbol,s.target)}</b></div></div>
+ <div class="mut">Signal time ${tm(s.tf?s.candle_t+TFM[s.tf]*60000:s.signal_t)}${s.resolved_t&&s.status!=='open'&&s.tf?` · closed ${tm(s.resolved_t+TFM[s.tf]*60000)}`:''}</div>${s.check?`<div class="check"><span class="chip">${esc(s.check.state)}</span> ${esc(s.check.text)}</div>`:''}</div>`;
+async function trades(sub){sub=['open','closed','all'].includes(sub)?sub:'open';const rows=await api('/api/signals'+(sub==='all'?'':'?status='+sub));let head='';
+ if(sub==='closed'){const done=rows.filter(s=>s.r!=null),t=done.reduce((a,s)=>a+s.r,0);head=`<div class="card"><b>${done.length} finished trades · total ${R(t)}</b><div class="mut note">R = profit measured in units of the planned risk. Before spread. Unclear and expired trades are not counted.</div></div>`}
+ $('#view').innerHTML=seg('trades',[['open','Open'],['closed','Closed'],['all','All']],sub)+head+(rows.map(tradeCard).join('')||'<div class="card mut">Nothing here yet. Signals are recorded automatically when all the rules are met.</div>')}
+
+/* ---------- LAB: do the filters really help? ---------- */
+async function lab(){$('#view').innerHTML=`<div class="card"><h2>Filter Lab</h2><p class="mut">Runs the same real price history through the plain rules and then through each filter, so you can see whether a filter truly helps. Costs are included.</p><div class="row">${pairSel()}</div>
+ <label for="sp">Spread in price units (rough typical value, replace it with your broker's)</label><input id="sp" type="number" step="any" min="0" value="${TYP[S.sym]}"><div style="margin-top:10px"><button id="go">Run comparison</button></div></div><div id="out"></div>`;
+ bindSel(lab);
+ $('#go').onclick=async()=>{const out=$('#out');out.innerHTML='<div class="card mut">Running. This downloads up to 5,000 candles, so it can take a few seconds…</div>';$('#go').disabled=true;
+  try{const r=await post('/api/lab',{symbol:S.sym,tf:S.tf,spread:$('#sp').value}),d=r.dataset;
+   const row=(l,a,b)=>`<tr><td>${l}</td><td>${a}</td><td>${b}</td></tr>`,col=x=>x.net;
+   out.innerHTML=`<div class="card"><b>${esc(d.symbol)} ${esc(d.tf)}</b><div class="mut note">${d.candles} candles from ${tm(d.first)} to ${tm(d.last)}${d.higherTimeframe?`; trend filter uses ${esc(d.higherTimeframe)}`:''}${d.excludedCandles?`; ${d.excludedCandles} bad candle(s) skipped`:''}. Spread ${esc(r.spread)}. Results are after spread.</div><div class="note"><b>How to read it:</b> look at average R per trade. A filter only counts if it beats the plain rules in both periods and each period has at least 30 trades.</div></div>`
+   +r.results.map(x=>x.unavailable?`<div class="card"><b>${esc(x.name)}</b><p class="mut">${esc(x.unavailable)}.</p></div>`
+    :`<div class="card"><div class="row sp"><b>${esc(x.name)}</b><span class="chip ${/Better/.test(x.verdict)?'ok':'warn'}">${esc(x.verdict)}</span></div><table><tr><th></th><th>Development</th><th>Out-of-sample</th></tr>`
+     +row('Finished trades',col(x.development).resolved,col(x.outOfSample).resolved)+row('Win rate',pc(col(x.development).winRate),pc(col(x.outOfSample).winRate))
+     +row('Avg R per trade',R(col(x.development).avgR),R(col(x.outOfSample).avgR))+row('Profit factor',n2(col(x.development).profitFactor),n2(col(x.outOfSample).profitFactor))
+     +row('Worst drop',n2(col(x.development).maxDrawdownR)+'R',n2(col(x.outOfSample).maxDrawdownR)+'R')+row('Total',R(col(x.development).cumulativeR),R(col(x.outOfSample).cumulativeR))+'</table></div>').join('')
+   +`<div class="card mut note">${esc(r.assumptions)} Out-of-sample means the last 30% of the history, which was not used to choose the filters. If you keep trying variations until one looks good, it will probably be luck.</div>`}
+  catch(e){out.innerHTML=`<div class="card err">${esc(e.message)}</div>`}$('#go').disabled=false}}
+
+/* ---------- AUDIT: check any outside provider's claims ---------- */
+async function audit(){const list=await api('/api/audit');
+ const form=`<div class="card"><h2>Signal Audit</h2><p class="mut">Type in signals from any app, channel or person. Pipwise checks them against real prices and shows the true results, next to Pipwise's own.</p>
+ <details${list.length?'':' open'}><summary>Add a signal</summary><label for="au-src">Source name</label><input id="au-src" maxlength="40" placeholder="e.g. Channel A">
+ <label for="au-sym">Pair</label><select id="au-sym">${opts(CFG.instruments,S.sym)}</select><label for="au-dir">Direction</label><select id="au-dir"><option>BUY</option><option>SELL</option></select>
+ <label for="au-en">Entry price</label><input id="au-en" type="number" step="any"><label for="au-st">Stop loss</label><input id="au-st" type="number" step="any"><label for="au-tp">Take profit</label><input id="au-tp" type="number" step="any">
+ <label for="au-t">When the signal was given (${esc(CFG.tz)} time, within the last 14 days)</label><input id="au-t" type="datetime-local" value="${nowLocal()}"><div style="margin-top:10px"><button id="au-add">Add signal</button></div><p id="au-msg" class="err"></p></details></div>`;
+ $('#view').innerHTML=form+(list.length?list.map(s=>{const m=s.metrics,p=s.pipwise;return `<div class="card"><div class="row sp"><h2>${esc(s.source)}</h2><span class="chip">${s.signals} signals</span></div>
+  <div><b>Their results</b><div>${metricLine(m)}</div></div><div style="margin-top:8px"><b>Pipwise, same period</b><div>${p.metrics.resolved?metricLine(p.metrics):'No finished Pipwise trades in this period yet'}</div></div>
+  <div class="mut note">Still open: ${s.open} · unclear: ${s.ambiguous} · expired: ${s.expired} · could not verify: ${s.unverified}. Assumes the stated entry was filled. Only finished trades are scored.</div>
+  <details><summary>Their signals</summary>${s.list.map(a=>tradeCard(a)+`<button class="ghost" data-del="${a.id}" style="margin-bottom:8px">Delete this signal</button>`).join('')}</details></div>`}).join(''):'<div class="card mut">No signals added yet.</div>');
+ $('#au-add').onclick=async()=>{const m=$('#au-msg');m.textContent='';try{await post('/api/audit',{source:$('#au-src').value,symbol:$('#au-sym').value,dir:$('#au-dir').value,entry:$('#au-en').value,stop:$('#au-st').value,target:$('#au-tp').value,signal_t:zonedToUtc($('#au-t').value,CFG.tz)});audit()}catch(e){m.textContent=e.message}};
+ document.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{await post('/api/audit/delete',{id:b.dataset.del});audit()})}
+
+/* ---------- MORE: performance, alerts, settings ---------- */
+async function more(sub){sub=['performance','alerts','settings'].includes(sub)?sub:'performance';let body='';
+ if(sub==='performance'){const p=await api('/api/performance'),grp=(t,o)=>Object.entries(o).map(([k,v])=>`<div class="card"><b>${t}: ${esc(k)}</b><div>${metricLine(v.gross)}</div><div class="mut note">Open ${v.open} · unclear ${v.ambiguous} · expired ${v.expired}</div></div>`).join('');
+  body=`<div class="card"><b>All Pipwise signals</b><div>${metricLine(p.overall.gross)}</div><div class="mut note">${esc(p.note)}</div></div>`+grp('Pair',p.bySymbol)+grp('Timeframe',p.byTimeframe)+grp('Strategy',p.byStrategy)
+   +`<details class="card"><summary>What the numbers mean</summary><ul><li>R: profit in units of the planned risk. A stop is -1R, a 2:1 target is +2R.</li><li>Win rate: wins divided by finished trades.</li><li>Avg R: average result per finished trade (the expectancy).</li><li>Profit factor: total won R divided by total lost R.</li><li>Worst drop: biggest fall from a peak of total R.</li></ul></details>`}
+ else if(sub==='alerts'){const a=await api('/api/alerts');body=`<div class="card"><button id="rd" class="ghost">Mark all read</button></div>`+(a.map(x=>`<div class="card"><div class="row sp"><span class="chip">${esc(x.type)}${x.read?'':' · new'}</span><span class="mut">${tm(x.created_at)}</span></div><div>${esc(x.message)}</div></div>`).join('')||'<div class="card mut">No alerts yet.</div>')}
+ else{const p=CFG.params,t=CFG.telegram;body=`<div class="card"><h2>Strategy</h2><p class="mut">Changes apply to new signals under a new version name. Saved signals are never rewritten.</p><label>RSI range for BUY</label><div class="row"><input id="a1" value="${p.rsiBull[0]}"><input id="a2" value="${p.rsiBull[1]}"></div><label>RSI range for SELL</label><div class="row"><input id="b1" value="${p.rsiBear[0]}"><input id="b2" value="${p.rsiBear[1]}"></div>
+  <label>Stop distance (times ATR)</label><input id="at" value="${p.atrStop}"><label>Target (times the risk)</label><input id="rr" value="${p.rr}"><label>Timezone</label><input id="tz" value="${esc(CFG.tz)}"><div style="margin-top:10px"><button id="sv">Save</button></div><p id="sm" class="mut">Current: ${esc(p.version)}</p></div>
+  <div class="card"><h2>Telegram alerts</h2><p class="mut">${t.token&&t.chat?'On':t.token?'Token set, chat ID missing':'Not set up'}. The keys are set on the server.</p><div class="row"><button id="tgf" class="ghost">Find my chat ID</button><button id="tgt" class="ghost">Send test message</button></div><p id="tgm" class="mut"></p></div>`}
+ $('#view').innerHTML=seg('more',[['performance','Performance'],['alerts','Alerts'],['settings','Settings']],sub)+body;
+ if(sub==='alerts')$('#rd').onclick=async()=>{await post('/api/alerts/read');more('alerts')};
+ if(sub==='settings'){const tgc=async(u,o,ok)=>{try{const r=await api(u,o);$('#tgm').textContent=ok(r)}catch(e){$('#tgm').textContent=e.message}};
+  $('#tgf').onclick=()=>tgc('/api/telegram/chat-id',undefined,r=>'Your chat ID: '+r.chatId+'. Set it as TELEGRAM_CHAT_ID on the server.');$('#tgt').onclick=()=>tgc('/api/telegram/test',{method:'POST'},()=>'Test message sent. Check Telegram.');
+  $('#sv').onclick=async()=>{try{const r=await post('/api/settings',{tz:$('#tz').value,params:{rsiBull:[$('#a1').value,$('#a2').value],rsiBear:[$('#b1').value,$('#b2').value],atrStop:$('#at').value,rr:$('#rr').value}});CFG.params=r.params;CFG.tz=r.tz;$('#sm').textContent='Saved: '+r.params.version}catch(e){$('#sm').textContent=e.message}}}}
+init().catch(e=>{$('#view').innerHTML=`<div class="card err">${esc(e.message)}</div>`});
 </script></body></html>

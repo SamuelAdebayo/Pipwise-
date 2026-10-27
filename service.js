@@ -1,7 +1,7 @@
 'use strict';
 const E = require('./engine');
 const INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'XAU/USD'];
-const MAX_BARS = 48;
+const MAX_BARS = 48, HTF = { '15min': '1h', '1h': '4h' }; // higher timeframe used for the trend filter (none above 4h)
 const ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. No spread, slippage or gaps modelled.`;
 const version = p => `v1|bull${p.rsiBull.join('-')}|bear${p.rsiBear.join('-')}|atr${p.atrStop}|rr${p.rr}`;
 
@@ -13,17 +13,26 @@ function cleanParams(i = {}) {
   p.version = version(p); return p;
 }
 
-function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, provider = 'twelvedata' }) {
-  const cache = new Map(), lastTracked = {}, att = {};
+function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, provider = 'twelvedata' }) {
+  const cache = new Map(), lastTracked = {}, att = {}, calls = [];
+  const ttlFor = tf => (ttlMs ? ({ '15min': 120000, '1h': 300000, '4h': 600000 }[tf] || ttlMs) : 0); // slower timeframes need fewer refreshes
   const params = () => cleanParams(JSON.parse(store.getSetting('params') || '{}'));
 
   async function load(symbol, tf, size = 400, force = false) {
-    const key = `${symbol}|${tf}|${size}`, hit = cache.get(key);
-    if (hit && now() - hit.at < (force ? minForceMs : ttlMs)) return hit.data; // cached: avoids hitting the provider on every page load
+    const key = `${symbol}|${tf}|${size}`, hit = cache.get(key), t = now();
+    if (hit && t - hit.at < (force ? minForceMs : ttlFor(tf))) return hit.data; // cached: avoids hitting the provider on every page load
+    const fallback = () => (hit && t - hit.at < 2 * 3600000 ? { ...hit.data, fromCache: true, cacheAgeSec: Math.round((t - hit.at) / 1000) } : null); // older data, clearly labelled
+    while (calls.length && t - calls[0] > 60000) calls.shift();
+    if (calls.length >= maxCallsPerMin) { // pace ourselves below the provider's per-minute limit
+      const f = fallback(); if (f) return f;
+      const err = new Error('Rate limit reached (Pipwise is pacing its requests)'); err.kind = 'rate_limit'; throw err;
+    }
+    calls.push(t);
     try { const data = await fetchCandles({ symbol, tf, outputsize: size }); cache.set(key, { at: now(), data }); return data; }
     catch (e) {
       const kind = e.kind || 'provider';
       if (kind !== 'no_credentials') store.addAlert(`api:${kind}:${symbol}:${tf}:${Math.floor(now() / 3600000)}`, 'api_error', `${symbol} ${tf}: ${e.message}`, now());
+      if (kind === 'rate_limit') { const f = fallback(); if (f) return f; }
       const err = new Error(e.message); err.kind = kind; throw err; // never falls back to fake prices
     }
   }
@@ -66,7 +75,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     const live = raw && raw.t + ms > now() ? { price: raw.c, t: raw.t } : null, livePx = live ? live.price : last ? last.c : null; // live = price of the still-forming candle
     const entryCheck = sig.levels ? E.entryCheck(sig.signal, sig.levels, livePx, { barsOld: last ? Math.max(0, Math.floor((now() - (last.t + ms)) / ms)) : 0 }) : null;
     const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120);
-    return { ok: true, excludedCandles: clean.excluded.length, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
+    return { ok: true, fromCache: !!d.fromCache, cacheAgeSec: d.cacheAgeSec || 0, excludedCandles: clean.excluded.length, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
       signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
       indicators: i >= 0 ? { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] } : null,
       chart: closed.slice(from).map((k, j) => ({ ...k, e20: ind.e20[from + j], e50: ind.e50[from + j], e200: ind.e200[from + j] })) };
@@ -129,6 +138,77 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     }
     return out;
   }
-  return { trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
+  // ---- Filter Lab: same candles, same costs, each filter switched on separately and together ----
+  const pick = m => ({ resolved: m.resolved, winRate: m.winRate, avgR: m.avgR, profitFactor: m.profitFactor, maxDrawdownR: m.maxDrawdownR, cumulativeR: m.cumulativeR });
+  const pack = s => ({ signals: s.signals, open: s.open, ambiguous: s.ambiguous, expired: s.expired, gross: pick(s.gross), net: pick(s.costAdjusted) });
+  function verdict(base, v) {
+    const d = v.development.gross, o = v.outOfSample.gross;
+    if (d.resolved < 30 || o.resolved < 30) return 'Too few trades to judge';
+    const better = (a, b) => a.avgR > b.avgR, bd = better(d, base.development.gross), bo = better(o, base.outOfSample.gross);
+    return bd && bo ? 'Better than plain rules in both periods' : !bd && !bo ? 'Not better than plain rules' : 'Mixed: better in only one period';
+  }
+  async function lab(o) {
+    if (!INSTRUMENTS.includes(o.symbol) || !E.TF_MIN[o.tf]) throw new Error('Unsupported symbol or timeframe');
+    const spread = Number(o.spread || 0); if (!(spread >= 0)) throw new Error('Invalid spread');
+    const p = params(), d = await load(o.symbol, o.tf, 5000), san = E.sanitize(d.candles), closed = E.closedOnly(san.candles, o.tf, now());
+    if (closed.length < 400) throw new Error('Not enough history (need 400+ closed candles)');
+    const htfTf = HTF[o.tf]; let htfC = null;
+    if (htfTf) { const h = await load(o.symbol, htfTf, 5000); htfC = E.closedOnly(E.sanitize(h.candles).candles, htfTf, now()); }
+    const defs = [['base', 'Plain rules', {}], ['htf', 'Higher-timeframe trend agrees', { htf: true }], ['adx', 'Trend strength (ADX 20+)', { adx: 20 }], ['session', 'London / New York hours only', { session: true }], ['all', 'All filters together', { htf: !!htfTf, adx: 20, session: true }]];
+    const results = [];
+    for (const [id, name, cfg] of defs) {
+      if (cfg.htf && !htfTf) { results.push({ id, name, unavailable: 'Needs a higher timeframe, and none is available above 4h' }); continue; }
+      const r = E.backtest(closed, o.tf, p, { spread, maxBars: MAX_BARS, accept: E.buildAccept(closed, o.tf, cfg, htfC, htfTf) });
+      results.push({ id, name, all: pack(r.all), development: pack(r.development), outOfSample: pack(r.outOfSample) });
+    }
+    const base = results[0]; results.forEach(r => { if (!r.unavailable) r.verdict = r.id === 'base' ? 'Baseline' : verdict(base, r); });
+    const out = { dataset: { provider: d.source, symbol: o.symbol, tf: o.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, excludedCandles: san.excluded.length, higherTimeframe: htfTf || null },
+      strategy: p.version, spread, assumptions: ASSUMPTIONS + ' One position at a time. Spread charged as spread/risk in R. First 70% of time = development, last 30% = out-of-sample.', results };
+    store.saveBacktest({ lab: true, symbol: o.symbol, tf: o.tf, spread }, out, now()); return out;
+  }
+  // ---- Signal Audit: track any outside provider's signals against real prices ----
+  let lastAudit = 0; const M15 = 900000;
+  function auditAdd(o) {
+    const src = String(o.source || '').trim(), n = x => Number(x);
+    if (!src || src.length > 40) throw new Error('Source name is required (max 40 characters)');
+    if (!INSTRUMENTS.includes(o.symbol)) throw new Error('Unsupported pair');
+    if (!['BUY', 'SELL'].includes(o.dir)) throw new Error('Direction must be BUY or SELL');
+    const a = { source: src, symbol: o.symbol, dir: o.dir, entry: n(o.entry), stop: n(o.stop), target: n(o.target), signal_t: n(o.signal_t), created_at: now() };
+    if (![a.entry, a.stop, a.target, a.signal_t].every(Number.isFinite) || a.entry <= 0 || a.stop <= 0 || a.target <= 0) throw new Error('Enter valid numbers');
+    const ok = a.dir === 'BUY' ? a.stop < a.entry && a.entry < a.target : a.target < a.entry && a.entry < a.stop;
+    if (!ok) throw new Error(a.dir === 'BUY' ? 'For a BUY: stop < entry < target' : 'For a SELL: target < entry < stop');
+    if (a.signal_t > now() + 60000) throw new Error('Signal time cannot be in the future');
+    if (a.signal_t < now() - 14 * 86400000) throw new Error('Signals older than 14 days cannot be checked (not enough price history)');
+    return store.addAudit(a);
+  }
+  async function auditTrack(force = false) {
+    if (!force && now() - lastAudit < 900000) return 0; lastAudit = now(); let n = 0;
+    const open = store.openAudit();
+    for (const symbol of [...new Set(open.map(a => a.symbol))].slice(0, 5)) {
+      let closed; try { closed = E.closedOnly(E.sanitize((await load(symbol, '15min', 2000)).candles).candles, '15min', now()); } catch { continue; }
+      if (!closed.length) continue;
+      for (const a of open.filter(x => x.symbol === symbol)) {
+        if (a.signal_t < closed[0].t) { store.resolveAudit(a.id, 'untrackable', null, now()); n++; continue; }
+        const k = closed.find(x => x.t <= a.signal_t && a.signal_t < x.t + M15);
+        if (!k) { if (a.signal_t >= closed[closed.length - 1].t + M15) continue; store.resolveAudit(a.id, 'unverified', null, now()); n++; continue; } // market closed at that time
+        const tol = k.h - k.l; // the stated entry must be near the price at that moment, else we cannot verify it
+        if (a.entry < k.l - tol || a.entry > k.h + tol) { store.resolveAudit(a.id, 'unverified', null, now()); n++; continue; }
+        const rr = (Math.abs(a.target - a.entry)) / Math.abs(a.entry - a.stop), fut = closed.filter(x => x.t >= k.t + M15);
+        const r = E.resolve({ signal: a.dir, levels: { stop: a.stop, target: a.target, rr } }, fut, 480);
+        if (r.status !== 'open') { store.resolveAudit(a.id, r.status, r.r == null ? null : Math.round(r.r * 100) / 100, fut[r.bars - 1].t); n++; }
+      }
+    }
+    return n;
+  }
+  function auditOverview() {
+    const by = {}; for (const r of store.listAudit()) (by[r.source] = by[r.source] || []).push(r);
+    return Object.entries(by).map(([source, list]) => {
+      const cnt = st => list.filter(s => s.status === st).length, from = Math.min(...list.map(s => s.signal_t)), to = Math.max(...list.map(s => s.signal_t));
+      const mm = E.summarize(store.allSignals({ from, to }).map(s => ({ status: s.status, r: s.r, netR: s.r })));
+      return { source, signals: list.length, open: cnt('open'), ambiguous: cnt('ambiguous'), expired: cnt('expired'), unverified: cnt('unverified') + cnt('untrackable'),
+        metrics: E.metrics(list.filter(s => s.r != null).map(s => s.r)), pipwise: { signals: mm.signals, metrics: mm.gross, from, to }, list };
+    });
+  }
+  return { lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };

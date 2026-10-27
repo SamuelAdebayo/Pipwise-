@@ -98,7 +98,7 @@ function summarize(trades) {
 }
 
 // Backtest: indicators are causal; one position at a time; dev/out-of-sample split by time. spread is in price units.
-function backtest(c, tf, p = DEFAULTS, o = {}) {
+function backtest(c, tf, p = DEFAULTS, o = {}) { // o.accept(i, dir) can veto a signal (used by the filters)
   const { spread = 0, maxBars = 48, devFraction = 0.7, from, to } = o;
   const issues = validateCandles(c, tf), bad = issues.filter(x => x.type !== 'gap');
   if (bad.length) throw new Error(`Invalid candles: ${bad.length} issue(s), first: ${JSON.stringify(bad[0])}`);
@@ -106,6 +106,7 @@ function backtest(c, tf, p = DEFAULTS, o = {}) {
   for (let i = 200; i < c.length; i++) {
     if (i <= busy || (from && c[i].t < from) || (to && c[i].t > to)) continue;
     const s = signalAt(ind, c, i, p); if (s.signal === 'WAIT' || !s.levels) continue;
+    if (o.accept && !o.accept(i, s.signal)) continue;
     const r = resolve(s, c.slice(i + 1, i + 1 + maxBars), maxBars), cost = spread / s.levels.risk;
     trades.push({ t: s.t, dir: s.signal, status: r.status, r: r.r, netR: r.r == null ? null : r.r - cost, levels: s.levels });
     busy = i + r.bars;
@@ -136,4 +137,45 @@ function sanitize(c) {
   }
   return { candles: out, excluded };
 }
-module.exports = { sanitize, entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };
+// ADX 14 (Wilder). Measures trend strength regardless of direction: low = sideways market.
+function adx(c, n = 14) {
+  const out = Array(c.length).fill(null); if (c.length < 2 * n + 1) return out;
+  const tr = [], pdm = [], mdm = [];
+  for (let i = 1; i < c.length; i++) {
+    const up = c[i].h - c[i - 1].h, dn = c[i - 1].l - c[i].l;
+    pdm.push(up > dn && up > 0 ? up : 0); mdm.push(dn > up && dn > 0 ? dn : 0);
+    tr.push(Math.max(c[i].h - c[i].l, Math.abs(c[i].h - c[i - 1].c), Math.abs(c[i].l - c[i - 1].c)));
+  }
+  let st = 0, sp = 0, sm = 0; for (let i = 0; i < n; i++) { st += tr[i]; sp += pdm[i]; sm += mdm[i]; }
+  const dx = [], push = () => { const a = st ? 100 * sp / st : 0, b = st ? 100 * sm / st : 0; dx.push(a + b ? 100 * Math.abs(a - b) / (a + b) : 0); };
+  push();
+  for (let i = n; i < tr.length; i++) { st = st - st / n + tr[i]; sp = sp - sp / n + pdm[i]; sm = sm - sm / n + mdm[i]; push(); }
+  let a = dx.slice(0, n).reduce((x, y) => x + y, 0) / n; out[2 * n - 1] = a; // dx[k] belongs to candle n+k
+  for (let k = n; k < dx.length; k++) { a = (a * (n - 1) + dx[k]) / n; out[n + k] = a; }
+  return out;
+}
+// Sessions in each city's own local time, so daylight saving is handled: London 08:00-16:30, New York 08:00-17:00.
+const _fmt = {};
+function localMinutes(t, tz) {
+  const f = _fmt[tz] || (_fmt[tz] = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })), p = f.formatToParts(new Date(t));
+  return +p.find(x => x.type === 'hour').value * 60 + +p.find(x => x.type === 'minute').value;
+}
+function inSession(t) { const l = localMinutes(t, 'Europe/London'), n = localMinutes(t, 'America/New_York'); return (l >= 480 && l < 990) || (n >= 480 && n < 1020); }
+// Optional filters for the Filter Lab. Each one only uses information available when the signal candle closed.
+function buildAccept(c, tf, cfg = {}, htfC = null, htfTf = null) {
+  const ms = TF_MIN[tf] * 60000, checks = [];
+  if (cfg.adx) { const a = adx(c, 14); checks.push(i => a[i] != null && a[i] >= cfg.adx); }
+  if (cfg.session) checks.push(i => inSession(c[i].t + ms));
+  if (cfg.htf) {
+    if (!htfC || !htfTf) throw new Error('Higher timeframe data required');
+    const h = indicators(htfC), hms = TF_MIN[htfTf] * 60000;
+    checks.push((i, dir) => {
+      const tc = c[i].t + ms; let lo = 0, hi = htfC.length - 1, k = -1; // last higher-timeframe candle already closed at tc
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (htfC[m].t + hms <= tc) { k = m; lo = m + 1; } else hi = m - 1; }
+      if (k < 0 || h.e50[k] == null || h.e200[k] == null) return false;
+      const bull = h.e50[k] > h.e200[k]; return dir === 'BUY' ? bull : !bull;
+    });
+  }
+  return (i, dir) => checks.every(f => f(i, dir));
+}
+module.exports = { adx, inSession, buildAccept, sanitize, entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };

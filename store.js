@@ -11,7 +11,10 @@ CREATE INDEX idx_sig_time ON signals(candle_t);
 CREATE TABLE alerts(id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, type TEXT NOT NULL, message TEXT NOT NULL, created_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE backtests(id INTEGER PRIMARY KEY, config TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL);`,
-`ALTER TABLE alerts ADD COLUMN sent INTEGER NOT NULL DEFAULT 0;`];
+`ALTER TABLE alerts ADD COLUMN sent INTEGER NOT NULL DEFAULT 0;`,
+`CREATE TABLE audit_signals(id INTEGER PRIMARY KEY, source TEXT NOT NULL, symbol TEXT NOT NULL, dir TEXT NOT NULL CHECK(dir IN('BUY','SELL')), entry REAL NOT NULL, stop REAL NOT NULL, target REAL NOT NULL,
+ signal_t INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open', r REAL, resolved_t INTEGER);
+CREATE INDEX idx_audit_open ON audit_signals(status,symbol);`];
 
 function open(path = ':memory:') {
   const db = new DatabaseSync(path);
@@ -28,6 +31,11 @@ function open(path = ':memory:') {
       return r.changes ? Number(r.lastInsertRowid) : null; // null = duplicate
     },
     openSignals: (symbol, tf) => q(`SELECT * FROM signals WHERE status='open' AND symbol=? AND tf=? ORDER BY candle_t`).all(symbol, tf),
+    addAudit: a => Number(q(`INSERT INTO audit_signals(source,symbol,dir,entry,stop,target,signal_t,created_at) VALUES(?,?,?,?,?,?,?,?)`).run(a.source, a.symbol, a.dir, a.entry, a.stop, a.target, a.signal_t, a.created_at).lastInsertRowid),
+    listAudit: () => q(`SELECT * FROM audit_signals ORDER BY signal_t DESC LIMIT 500`).all(),
+    openAudit: () => q(`SELECT * FROM audit_signals WHERE status='open'`).all(),
+    resolveAudit: (id, status, r, t) => q(`UPDATE audit_signals SET status=?,r=?,resolved_t=? WHERE id=? AND status='open'`).run(status, r, t, id).changes,
+    deleteAudit: id => q(`DELETE FROM audit_signals WHERE id=?`).run(id).changes,
     openPairs: () => q(`SELECT DISTINCT symbol,tf FROM signals WHERE status='open'`).all(),
     resolveSignal: (id, status, r, t, assumptions) => q(`UPDATE signals SET status=?,r=?,resolved_t=?,assumptions=? WHERE id=? AND status='open'`).run(status, r, t, assumptions, id).changes,
     listSignals({ status, limit = 100 } = {}) {

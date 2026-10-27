@@ -34,6 +34,10 @@ function createApp({ service, store, config }) {
       }
       if (req.method === 'GET' && p === '/api/telegram/chat-id') { const t = config.telegram || {}; if (!t.token) throw new Error('TELEGRAM_BOT_TOKEN is not set'); const id = await t.discover(); if (!id) throw new Error('No message found. Send any message to your bot in Telegram first, then try again.'); return send(res, 200, { chatId: id }); }
       if (req.method === 'POST' && p === '/api/telegram/test') { const t = config.telegram || {}; if (!t.token || !t.chat) throw new Error('Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first'); await t.test(); return send(res, 200, { sent: true }); }
+      if (req.method === 'POST' && p === '/api/lab') { if (!config.hasKey) throw new Error('No data provider configured'); return send(res, 200, await service.lab(await body(req))); }
+      if (req.method === 'GET' && p === '/api/audit') { if (config.hasKey) await service.auditTrack(true).catch(() => {}); return send(res, 200, service.auditOverview()); }
+      if (req.method === 'POST' && p === '/api/audit') { const id = service.auditAdd(await body(req)); if (config.hasKey) await service.auditTrack(true).catch(() => {}); return send(res, 200, { id }); }
+      if (req.method === 'POST' && p === '/api/audit/delete') return send(res, 200, { deleted: service.auditDelete((await body(req)).id) });
       if (req.method === 'POST' && p === '/api/backtest') { if (!config.hasKey) throw new Error('No data provider configured'); return send(res, 200, await service.backtest(await body(req))); }
       send(res, 404, { error: 'Not found' });
     } catch (e) { send(res, 400, { error: e.message }); }
@@ -52,7 +56,7 @@ if (require.main === module) {
   const service = createService({ store, fetchCandles: provider.fetchCandles });
   if (tgToken && tgChat && !store.getSetting('tg_baseline')) { store.markAllSent(); store.setSetting('tg_baseline', '1'); } // never send old alerts when Telegram is first enabled
   const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || 'new_signal,outcome,api_error').split(',').map(x => x.trim()) });
-  const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, deliver: async () => { await service.trackAll().catch(() => {}); return deliver(); } });
+  const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, deliver: async () => { await service.trackAll().catch(() => {}); await service.auditTrack().catch(() => {}); return deliver(); } });
   let busy = false; const run = async () => { if (busy) return; busy = true; try { await sch.tick(); } catch { console.error('Background check failed'); } finally { busy = false; } };
   if (config.hasKey && watch.length) { setTimeout(run, 5000); setInterval(run, 60000); }
   http.createServer(createApp({ service, store, config })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : 'off'} | db: ${env.DB_PATH || 'local file'}`));
