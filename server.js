@@ -35,7 +35,7 @@ function createApp({ service, store, config }) {
       if (req.method === 'GET' && p === '/api/telegram/chat-id') { const t = config.telegram || {}; if (!t.token) throw new Error('TELEGRAM_BOT_TOKEN is not set'); const id = await t.discover(); if (!id) throw new Error('No message found. Send any message to your bot in Telegram first, then try again.'); return send(res, 200, { chatId: id }); }
       if (req.method === 'POST' && p === '/api/telegram/test') { const t = config.telegram || {}; if (!t.token || !t.chat) throw new Error('Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first'); await t.test(); return send(res, 200, { sent: true }); }
       if (req.method === 'GET' && p === '/api/export') { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="pipwise-backup.json"', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify(store.exportAll())); }
-      if (req.method === 'POST' && p === '/api/import') return send(res, 200, { added: store.importAll(await body(req, 20000000)) });
+      if (req.method === 'POST' && p === '/api/import') return send(res, 200, store.importAll(await body(req, 20000000)));
       if (req.method === 'POST' && p === '/api/lab') { if (!config.hasKey) throw new Error('No data provider configured'); return send(res, 200, await service.lab(await body(req))); }
       if (req.method === 'GET' && p === '/api/audit') { if (config.hasKey) await service.auditTrack(true).catch(() => {}); return send(res, 200, service.auditOverview()); }
       if (req.method === 'POST' && p === '/api/audit') { const id = service.auditAdd(await body(req)); if (config.hasKey) await service.auditTrack(true).catch(() => {}); return send(res, 200, { id }); }

@@ -34,18 +34,24 @@ function open(path = ':memory:') {
   const api = {
     close: () => db.close(), tx,
     exportAll: () => ({ app: 'pipwise', format: 1, exportedAt: Date.now(), tables: Object.fromEntries(Object.entries(TABLES).map(([t, cols]) => [t, db.prepare(`SELECT ${cols.join(',')} FROM ${t}`).all()])) }),
-    importAll(data) { // adds missing rows only: never overwrites or deletes, and is all-or-nothing
+    importAll(data) { // adds missing records only: never overwrites or deletes, and is all-or-nothing
       if (!data || data.app !== 'pipwise' || data.format !== 1 || typeof data.tables !== 'object' || !data.tables) throw new Error('This is not a Pipwise backup file');
-      const out = {};
+      const out = { added: {}, found: {} }, SKIP_ID = ['signals', 'audit_signals', 'alerts', 'backtests'];
+      // Row ids are NOT copied: the app may already have recorded new rows using the same ids, so records are matched on what they are instead.
+      const DUPE = { audit_signals: ['source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t'], backtests: ['created_at', 'config'] };
+      const val = (r, c, t) => { const x = r[c]; if (x === undefined) return null; if (x === null || typeof x === 'number' || typeof x === 'string') return x; throw new Error(`Bad value in ${t}.${c}`); };
       tx(() => {
-        for (const [t, cols] of Object.entries(TABLES)) {
+        for (const [t, all] of Object.entries(TABLES)) {
           const rows = data.tables[t]; if (rows === undefined) continue; if (!Array.isArray(rows)) throw new Error(`Bad backup: ${t}`);
-          const ins = db.prepare(`INSERT INTO ${t}(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')}) ON CONFLICT DO NOTHING`); let n = 0;
+          const cols = all.filter(c => !(SKIP_ID.includes(t) && c === 'id')), ins = db.prepare(`INSERT INTO ${t}(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')}) ON CONFLICT DO NOTHING`);
+          const dupe = DUPE[t] && db.prepare(`SELECT 1 FROM ${t} WHERE ${DUPE[t].map(c => c + '=?').join(' AND ')}`); let n = 0; out.found[t] = rows.length;
           for (const r of rows) {
             if (!r || typeof r !== 'object') throw new Error(`Bad backup row in ${t}`);
-            n += ins.run(...cols.map(c => { const v = r[c]; if (v === undefined || v === null || typeof v === 'number' || typeof v === 'string') return v === undefined ? null : v; throw new Error(`Bad value in ${t}.${c}`); })).changes;
+            const row = { ...r }; if (t === 'alerts') { row.key = 'restored:' + String(r.key).replace(/^restored:/, ''); row.sent = 1; } // restored alerts are history: never re-sent to Telegram
+            if (dupe && dupe.get(...DUPE[t].map(c => val(row, c, t)))) continue;
+            n += ins.run(...cols.map(c => val(row, c, t))).changes;
           }
-          out[t] = n;
+          out.added[t] = n;
         }
       });
       return out;
