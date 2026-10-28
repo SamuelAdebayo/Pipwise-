@@ -36,7 +36,7 @@ function open(path = ':memory:') {
     exportAll: () => ({ app: 'pipwise', format: 1, exportedAt: Date.now(), tables: Object.fromEntries(Object.entries(TABLES).map(([t, cols]) => [t, db.prepare(`SELECT ${cols.join(',')} FROM ${t}`).all()])) }),
     importAll(data) { // adds missing records only: never overwrites or deletes, and is all-or-nothing
       if (!data || data.app !== 'pipwise' || data.format !== 1 || typeof data.tables !== 'object' || !data.tables) throw new Error('This is not a Pipwise backup file');
-      const out = { added: {}, found: {} }, SKIP_ID = ['signals', 'audit_signals', 'alerts', 'backtests'];
+      const out = { added: {}, found: {}, updated: {} }, SKIP_ID = ['signals', 'audit_signals', 'alerts', 'backtests'];
       // Row ids are NOT copied: the app may already have recorded new rows using the same ids, so records are matched on what they are instead.
       const DUPE = { audit_signals: ['source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t'], backtests: ['created_at', 'config'] };
       const val = (r, c, t) => { const x = r[c]; if (x === undefined) return null; if (x === null || typeof x === 'number' || typeof x === 'string') return x; throw new Error(`Bad value in ${t}.${c}`); };
@@ -44,14 +44,19 @@ function open(path = ':memory:') {
         for (const [t, all] of Object.entries(TABLES)) {
           const rows = data.tables[t]; if (rows === undefined) continue; if (!Array.isArray(rows)) throw new Error(`Bad backup: ${t}`);
           const cols = all.filter(c => !(SKIP_ID.includes(t) && c === 'id')), ins = db.prepare(`INSERT INTO ${t}(${cols.join(',')}) VALUES(${cols.map(() => '?').join(',')}) ON CONFLICT DO NOTHING`);
-          const dupe = DUPE[t] && db.prepare(`SELECT 1 FROM ${t} WHERE ${DUPE[t].map(c => c + '=?').join(' AND ')}`); let n = 0; out.found[t] = rows.length;
+          const dupe = DUPE[t] && db.prepare(`SELECT 1 FROM ${t} WHERE ${DUPE[t].map(c => c + '=?').join(' AND ')}`); let n = 0, u = 0; out.found[t] = rows.length;
+          // A record the app already has as OPEN, which the backup shows as finished, is completed from the backup. Nothing else is ever overwritten.
+          const finish = r => r.status && r.status !== 'open';
+          const updSig = t === 'signals' && db.prepare(`UPDATE signals SET status=?,r=?,resolved_t=?,assumptions=? WHERE symbol=? AND tf=? AND strategy=? AND candle_t=? AND status='open'`);
+          const updAud = t === 'audit_signals' && db.prepare(`UPDATE audit_signals SET status=?,r=?,resolved_t=? WHERE source=? AND symbol=? AND dir=? AND entry=? AND stop=? AND target=? AND signal_t=? AND status='open'`);
           for (const r of rows) {
             if (!r || typeof r !== 'object') throw new Error(`Bad backup row in ${t}`);
             const row = { ...r }; if (t === 'alerts') { row.key = 'restored:' + String(r.key).replace(/^restored:/, ''); row.sent = 1; } // restored alerts are history: never re-sent to Telegram
-            if (dupe && dupe.get(...DUPE[t].map(c => val(row, c, t)))) continue;
-            n += ins.run(...cols.map(c => val(row, c, t))).changes;
+            if (dupe && dupe.get(...DUPE[t].map(c => val(row, c, t)))) { if (updAud && finish(row)) u += updAud.run(...['status', 'r', 'resolved_t', 'source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t'].map(c => val(row, c, t))).changes; continue; }
+            const ch = ins.run(...cols.map(c => val(row, c, t))).changes; n += ch;
+            if (!ch && updSig && finish(row)) u += updSig.run(...['status', 'r', 'resolved_t', 'assumptions', 'symbol', 'tf', 'strategy', 'candle_t'].map(c => val(row, c, t))).changes;
           }
-          out.added[t] = n;
+          out.added[t] = n; out.updated[t] = u;
         }
       });
       return out;
