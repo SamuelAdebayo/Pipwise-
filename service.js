@@ -214,6 +214,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
         metrics: E.metrics(list.filter(s => s.r != null).map(s => s.r)), pipwise: { signals: mm.signals, metrics: mm.gross, from, to }, list };
     });
   }
-  return { lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
+  const resetTracking = () => { for (const k of Object.keys(lastTracked)) delete lastTracked[k]; for (const k of Object.keys(att)) delete att[k]; }; // forces the next check to look at every open trade again
+  return { resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };
