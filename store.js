@@ -14,7 +14,19 @@ CREATE TABLE backtests(id INTEGER PRIMARY KEY, config TEXT NOT NULL, result TEXT
 `ALTER TABLE alerts ADD COLUMN sent INTEGER NOT NULL DEFAULT 0;`,
 `CREATE TABLE audit_signals(id INTEGER PRIMARY KEY, source TEXT NOT NULL, symbol TEXT NOT NULL, dir TEXT NOT NULL CHECK(dir IN('BUY','SELL')), entry REAL NOT NULL, stop REAL NOT NULL, target REAL NOT NULL,
  signal_t INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open', r REAL, resolved_t INTEGER);
-CREATE INDEX idx_audit_open ON audit_signals(status,symbol);`];
+CREATE INDEX idx_audit_open ON audit_signals(status,symbol);`,
+`CREATE TABLE strategies(id TEXT PRIMARY KEY, name TEXT NOT NULL, origin TEXT NOT NULL, description TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE strategy_versions(id INTEGER PRIMARY KEY, strategy_id TEXT NOT NULL REFERENCES strategies(id), version TEXT NOT NULL, rules TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN('approved','candidate','rejected','retired')), source_url TEXT, created_at INTEGER NOT NULL, UNIQUE(strategy_id,version));
+CREATE TABLE experiments(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN('manual','self_improvement','discovery')), objective TEXT NOT NULL, hypothesis TEXT, origin TEXT,
+ strategy_id TEXT NOT NULL, strategy_version TEXT NOT NULL, symbol TEXT, tf TEXT, params TEXT, data_range TEXT, settings TEXT,
+ status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN('proposed','queued','running','completed','rejected','blocked','awaiting_validation')),
+ priority INTEGER NOT NULL DEFAULT 5, retry_count INTEGER NOT NULL DEFAULT 0, needs_validation INTEGER NOT NULL DEFAULT 1, result TEXT, error TEXT, rejection_reason TEXT,
+ dedupe_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER);
+CREATE INDEX idx_exp_status ON experiments(status,priority);`];
+// The strategy Pipwise already uses, written down as data so new strategies can be compared with it. The live engine does not read this.
+const BASELINE_RULES = { entry: { BUY: ['EMA50 > EMA200', 'EMA20 > EMA50', 'RSI14 inside the BUY range', 'close > EMA20'], SELL: ['EMA50 < EMA200', 'EMA20 < EMA50', 'RSI14 inside the SELL range', 'close < EMA20'] },
+  stop: 'atrStop x ATR14 from the entry', target: 'rr x the stop distance', defaults: { rsiBull: [50, 70], rsiBear: [30, 50], atrStop: 1.5, rr: 2 }, timeframes: ['15min', '1h', '4h'] };
 
 // Columns that make up a backup file. Order matters for restore.
 const TABLES = {
@@ -23,6 +35,9 @@ const TABLES = {
   alerts: ['id', 'key', 'type', 'message', 'created_at', 'read', 'sent'],
   settings: ['key', 'value'],
   backtests: ['id', 'config', 'result', 'created_at'],
+  strategies: ['id', 'name', 'origin', 'description', 'created_at'],
+  strategy_versions: ['id', 'strategy_id', 'version', 'rules', 'status', 'source_url', 'created_at'],
+  experiments: ['id', 'kind', 'objective', 'hypothesis', 'origin', 'strategy_id', 'strategy_version', 'symbol', 'tf', 'params', 'data_range', 'settings', 'status', 'priority', 'retry_count', 'needs_validation', 'result', 'error', 'rejection_reason', 'dedupe_key', 'created_at', 'updated_at', 'started_at', 'finished_at'],
 };
 function open(path = ':memory:') {
   const db = new DatabaseSync(path);
@@ -36,7 +51,7 @@ function open(path = ':memory:') {
     exportAll: () => ({ app: 'pipwise', format: 1, exportedAt: Date.now(), tables: Object.fromEntries(Object.entries(TABLES).map(([t, cols]) => [t, db.prepare(`SELECT ${cols.join(',')} FROM ${t}`).all()])) }),
     importAll(data) { // adds missing records only: never overwrites or deletes, and is all-or-nothing
       if (!data || data.app !== 'pipwise' || data.format !== 1 || typeof data.tables !== 'object' || !data.tables) throw new Error('This is not a Pipwise backup file');
-      const out = { added: {}, found: {}, updated: {} }, SKIP_ID = ['signals', 'audit_signals', 'alerts', 'backtests'];
+      const out = { added: {}, found: {}, updated: {} }, SKIP_ID = ['signals', 'audit_signals', 'alerts', 'backtests', 'strategy_versions', 'experiments'];
       // Row ids are NOT copied: the app may already have recorded new rows using the same ids, so records are matched on what they are instead.
       const DUPE = { audit_signals: ['source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t'], backtests: ['created_at', 'config'] };
       const val = (r, c, t) => { const x = r[c]; if (x === undefined) return null; if (x === null || typeof x === 'number' || typeof x === 'string') return x; throw new Error(`Bad value in ${t}.${c}`); };
@@ -88,9 +103,19 @@ function open(path = ':memory:') {
     getSetting: k => (q(`SELECT value FROM settings WHERE key=?`).get(k) || {}).value,
     setSetting: (k, v) => q(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(k, String(v)),
     saveBacktest: (config, result, now) => Number(q(`INSERT INTO backtests(config,result,created_at) VALUES(?,?,?)`).run(JSON.stringify(config), JSON.stringify(result), now).lastInsertRowid),
+    listStrategies: () => q(`SELECT * FROM strategies ORDER BY created_at`).all().map(st => ({ ...st, versions: q(`SELECT id,version,rules,status,source_url,created_at FROM strategy_versions WHERE strategy_id=? ORDER BY id`).all(st.id).map(v => ({ ...v, rules: JSON.parse(v.rules) })) })),
+    addExperiment(e) { // records a research task; returns null if the same task (dedupe_key) already exists
+      const t = e.now || Date.now(), r = q(`INSERT INTO experiments(kind,objective,hypothesis,origin,strategy_id,strategy_version,symbol,tf,params,data_range,settings,priority,needs_validation,dedupe_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`)
+        .run(e.kind || 'manual', e.objective, e.hypothesis ?? null, e.origin ?? null, e.strategy_id, e.strategy_version, e.symbol ?? null, e.tf ?? null, e.params ? JSON.stringify(e.params) : null, e.data_range ? JSON.stringify(e.data_range) : null, e.settings ? JSON.stringify(e.settings) : null, e.priority ?? 5, e.needs_validation === false ? 0 : 1, e.dedupe_key, t, t);
+      return r.changes ? Number(r.lastInsertRowid) : null;
+    },
+    listExperiments: (limit = 100) => q(`SELECT * FROM experiments ORDER BY id DESC LIMIT ?`).all(Math.min(limit, 500)),
     listBacktests: () => q(`SELECT id,config,created_at FROM backtests ORDER BY id DESC LIMIT 20`).all(),
   };
   if (!api.getSetting('db_created_at')) api.setSetting('db_created_at', Date.now()); // shows when this database file was first created
+  const t0 = Date.now(); // register the existing strategy once (safe to repeat)
+  db.prepare(`INSERT OR IGNORE INTO strategies(id,name,origin,description,created_at) VALUES(?,?,?,?,?)`).run('ema-rsi-trend', 'EMA / RSI / ATR trend follower', 'built-in', 'The original Pipwise rules. Signals record parameter variants as labels like v1|bull50-70|bear30-50|atr1.5|rr2.', t0);
+  db.prepare(`INSERT OR IGNORE INTO strategy_versions(strategy_id,version,rules,status,source_url,created_at) VALUES(?,?,?,?,?,?)`).run('ema-rsi-trend', 'v1', JSON.stringify(BASELINE_RULES), 'approved', null, t0);
   return api;
 }
-module.exports = { open };
+module.exports = { open, MIGRATIONS };

@@ -23,6 +23,8 @@ function createApp({ service, store, config }) {
       if (req.method === 'GET' && p === '/api/snapshot') { if (!config.hasKey) return send(res, 200, { setup: true }); return send(res, 200, await service.snapshot(...pair(u), u.searchParams.get('force') === '1')); }
       if (req.method === 'GET' && p === '/api/signals') { const s = u.searchParams.get('status'); if (s && !['open', 'closed'].includes(s)) throw new Error('Bad status'); if (config.hasKey) await service.trackAll(); return send(res, 200, await service.enrich(store.listSignals({ status: s }))); }
       if (req.method === 'GET' && p === '/api/scan') { const sy = u.searchParams.get('symbol'); if (!INSTRUMENTS.includes(sy)) throw new Error('Unsupported symbol'); return send(res, 200, config.hasKey ? await service.scan(sy) : []); }
+      if (req.method === 'GET' && p === '/api/strategies') return send(res, 200, store.listStrategies());
+      if (req.method === 'GET' && p === '/api/experiments') return send(res, 200, store.listExperiments());
       if (req.method === 'GET' && p === '/api/alerts') return send(res, 200, store.listAlerts());
       if (req.method === 'POST' && p === '/api/alerts/read') return send(res, 200, { updated: store.markAlertsRead() });
       if (req.method === 'GET' && p === '/api/performance') { const n = k => (u.searchParams.get(k) ? Number(u.searchParams.get(k)) : undefined); return send(res, 200, service.performance({ from: n('from'), to: n('to') })); }
