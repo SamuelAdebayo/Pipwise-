@@ -1,11 +1,12 @@
 'use strict';
 // Pipwise core engine: indicators, strategy, outcomes, metrics, backtest. No dependencies.
-const TF_MIN = { '15min': 15, '1h': 60, '4h': 240 };
+const TF_MIN = { '15min': 15, '1h': 60, '4h': 240 }; // timeframes you can select
+const TF_ALL = { ...TF_MIN, '1day': 1440 }; // also includes daily candles, used only as trend context
 const DEFAULTS = { version: 'v1', rsiBull: [50, 70], rsiBear: [30, 50], atrStop: 1.5, rr: 2 };
 
 // Candle = { t: open time (ms, UTC), o, h, l, c }
 function validateCandles(c, tf) {
-  const ms = TF_MIN[tf] * 60000, issues = [], seen = new Set();
+  const ms = TF_ALL[tf] * 60000, issues = [], seen = new Set();
   c.forEach((k, i) => {
     if (![k.t, k.o, k.h, k.l, k.c].every(Number.isFinite) || k.h < Math.max(k.o, k.c, k.l) || k.l > Math.min(k.o, k.c, k.h)) issues.push({ i, type: 'ohlc' });
     if (seen.has(k.t)) issues.push({ i, type: 'duplicate' });
@@ -14,8 +15,8 @@ function validateCandles(c, tf) {
   });
   return issues;
 }
-const closedOnly = (c, tf, now = Date.now()) => c.filter(k => k.t + TF_MIN[tf] * 60000 <= now);
-const isStale = (c, tf, now = Date.now(), tolerance = 2) => !c.length || now - (c[c.length - 1].t + TF_MIN[tf] * 60000) > tolerance * TF_MIN[tf] * 60000;
+const closedOnly = (c, tf, now = Date.now()) => c.filter(k => k.t + TF_ALL[tf] * 60000 <= now);
+const isStale = (c, tf, now = Date.now(), tolerance = 2) => !c.length || now - (c[c.length - 1].t + TF_ALL[tf] * 60000) > tolerance * TF_ALL[tf] * 60000;
 
 // EMA: seeded with SMA of first n values, then k = 2/(n+1). null until seeded.
 function ema(v, n) {
@@ -99,7 +100,7 @@ function summarize(trades) {
 
 // Backtest: indicators are causal; one position at a time; dev/out-of-sample split by time. spread is in price units.
 function backtest(c, tf, p = DEFAULTS, o = {}) { // o.accept(i, dir) can veto a signal (used by the filters)
-  const { spread = 0, maxBars = 48, devFraction = 0.7, from, to } = o;
+  const { spread = 0, slippage = 0, maxBars = 48, devFraction = 0.7, from, to } = o; // spread and slippage are in price units, both charged as cost / risk in R
   const issues = validateCandles(c, tf), bad = issues.filter(x => x.type !== 'gap');
   if (bad.length) throw new Error(`Invalid candles: ${bad.length} issue(s), first: ${JSON.stringify(bad[0])}`);
   const ind = indicators(c), trades = []; let busy = -1;
@@ -107,12 +108,12 @@ function backtest(c, tf, p = DEFAULTS, o = {}) { // o.accept(i, dir) can veto a 
     if (i <= busy || (from && c[i].t < from) || (to && c[i].t > to)) continue;
     const s = signalAt(ind, c, i, p); if (s.signal === 'WAIT' || !s.levels) continue;
     if (o.accept && !o.accept(i, s.signal, s.levels)) continue;
-    const r = resolve(s, c.slice(i + 1, i + 1 + maxBars), maxBars), cost = spread / s.levels.risk;
+    const r = resolve(s, c.slice(i + 1, i + 1 + maxBars), maxBars), cost = (spread + slippage) / s.levels.risk;
     trades.push({ t: s.t, dir: s.signal, status: r.status, r: r.r, netR: r.r == null ? null : r.r - cost, levels: s.levels });
     busy = i + r.bars;
   }
   const cut = c[Math.floor(c.length * devFraction)].t;
-  return { params: p, options: { spread, maxBars, devFraction }, candles: c.length, gaps: issues.length, trades,
+  return { params: p, options: { spread, slippage, maxBars, devFraction }, candles: c.length, gaps: issues.length, trades,
     all: summarize(trades), development: summarize(trades.filter(t => t.t < cut)), outOfSample: summarize(trades.filter(t => t.t >= cut)) };
 }
 // Is a signal still worth entering at the current price? Transparent heuristic, not a prediction.
@@ -168,7 +169,7 @@ function buildAccept(c, tf, cfg = {}, htfC = null, htfTf = null) {
   if (cfg.session) checks.push(i => inSession(c[i].t + ms));
   if (cfg.htf) {
     if (!htfC || !htfTf) throw new Error('Higher timeframe data required');
-    const h = indicators(htfC), hms = TF_MIN[htfTf] * 60000;
+    const h = indicators(htfC), hms = TF_ALL[htfTf] * 60000 + (htfTf === '1day' ? 86400000 : 0); // daily candle boundaries differ between providers, so a daily candle is only used one extra day after it ends (avoids look-ahead)
     checks.push((i, dir) => {
       const tc = c[i].t + ms; let lo = 0, hi = htfC.length - 1, k = -1; // last higher-timeframe candle already closed at tc
       while (lo <= hi) { const m = (lo + hi) >> 1; if (htfC[m].t + hms <= tc) { k = m; lo = m + 1; } else hi = m - 1; }
@@ -195,4 +196,4 @@ function buildAccept(c, tf, cfg = {}, htfC = null, htfTf = null) {
   }
   return (i, dir, lv) => checks.every(f => f(i, dir, lv));
 }
-module.exports = { adx, inSession, buildAccept, sanitize, entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };
+module.exports = { TF_ALL, adx, inSession, buildAccept, sanitize, entryCheck, TF_MIN, DEFAULTS, validateCandles, closedOnly, isStale, ema, rsi, atr, indicators, decide, levels, signalAt, resolve, metrics, summarize, backtest };

@@ -1,6 +1,6 @@
 'use strict';
 // Twelve Data adapter (server-side). Key comes from TWELVEDATA_API_KEY. Not yet verified against the live API.
-const INTERVAL = { '15min': '15min', '1h': '1h', '4h': '4h' };
+const INTERVAL = { '15min': '15min', '1h': '1h', '4h': '4h', '1day': '1day' };
 class ProviderError extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
 async function fetchCandles({ symbol, tf, outputsize = 400, apiKey = process.env.TWELVEDATA_API_KEY, fetchImpl = fetch, timeoutMs = 10000 }) {
   if (!apiKey) throw new ProviderError('no_credentials', 'TWELVEDATA_API_KEY is not set');
@@ -18,7 +18,8 @@ async function fetchCandles({ symbol, tf, outputsize = 400, apiKey = process.env
     const kind = body.code === 429 ? 'rate_limit' : body.code === 401 ? 'auth' : 'provider';
     throw new ProviderError(kind, `Provider error: ${body.message || 'unexpected response'}`);
   }
-  const candles = body.values.map(v => ({ t: Date.parse(v.datetime.replace(' ', 'T') + 'Z'), o: +v.open, h: +v.high, l: +v.low, c: +v.close }));
+  // daily candles come as a date only (no time), so midnight UTC is assumed for them
+  const candles = body.values.map(v => ({ t: Date.parse((v.datetime.length <= 10 ? v.datetime + 'T00:00:00' : v.datetime.replace(' ', 'T')) + 'Z'), o: +v.open, h: +v.high, l: +v.low, c: +v.close }));
   return { source: 'twelvedata', symbol, tf, fetchedAt: Date.now(), candles };
 }
 module.exports = { fetchCandles, ProviderError };

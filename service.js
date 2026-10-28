@@ -1,7 +1,9 @@
 'use strict';
 const E = require('./engine');
 const INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'XAU/USD'];
-const MAX_BARS = 48, HTF = { '15min': '1h', '1h': '4h' }; // higher timeframe used for the trend filter (none above 4h)
+const MAX_BARS = 48, HTF = { '15min': '1h', '1h': '4h', '4h': '1day' }; // higher timeframe used for the trend filter
+const pipSize = s => (s.includes('JPY') ? 0.01 : s.startsWith('XAU') ? 0.1 : 0.0001); // price units per pip (XAU/USD: 1 pip = 0.10)
+const LAB_ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. Spread and slippage are both charged as cost / risk in R, using the values you entered; gaps are not modelled. One position at a time. First 70% of time = development, last 30% = out-of-sample.`;
 const ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. No spread, slippage or gaps modelled.`;
 const version = p => `v1|bull${p.rsiBull.join('-')}|bear${p.rsiBear.join('-')}|atr${p.atrStop}|rr${p.rr}`;
 
@@ -15,7 +17,7 @@ function cleanParams(i = {}) {
 
 function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, provider = 'twelvedata' }) {
   const cache = new Map(), lastTracked = {}, att = {}, calls = [];
-  const ttlFor = tf => (ttlMs ? ({ '15min': 120000, '1h': 300000, '4h': 600000 }[tf] || ttlMs) : 0); // slower timeframes need fewer refreshes
+  const ttlFor = tf => (ttlMs ? ({ '15min': 120000, '1h': 300000, '4h': 600000, '1day': 3600000 }[tf] || ttlMs) : 0); // slower timeframes need fewer refreshes
   const params = () => cleanParams(JSON.parse(store.getSetting('params') || '{}'));
 
   async function load(symbol, tf, size = 400, force = false) {
@@ -150,21 +152,22 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
   async function lab(o) {
     if (!INSTRUMENTS.includes(o.symbol) || !E.TF_MIN[o.tf]) throw new Error('Unsupported symbol or timeframe');
     const spread = Number(o.spread || 0); if (!(spread >= 0)) throw new Error('Invalid spread');
+    const slipPips = Number(o.slippagePips ?? 0.5); if (!(slipPips >= 0 && slipPips <= 50)) throw new Error('Invalid slippage'); const slippage = slipPips * pipSize(o.symbol);
     const p = params(), d = await load(o.symbol, o.tf, 5000), san = E.sanitize(d.candles), closed = E.closedOnly(san.candles, o.tf, now());
     if (closed.length < 400) throw new Error('Not enough history (need 400+ closed candles)');
     const htfTf = HTF[o.tf]; let htfC = null;
     if (htfTf) { const h = await load(o.symbol, htfTf, 5000); htfC = E.closedOnly(E.sanitize(h.candles).candles, htfTf, now()); }
-    const defs = [['base', 'Plain rules', {}], ['htf', 'Higher-timeframe trend agrees', { htf: true }], ['adx', 'Trend strength (ADX 20+)', { adx: 20 }], ['session', 'London / New York hours only', { session: true }], ['pullback', 'Pullback to the 20 EMA (last 5 candles)', { pullback: 5 }], ['sr', 'Room to move: no support/resistance within 1.5R', { sr: 1.5 }], ['all', 'All filters together', { htf: !!htfTf, adx: 20, session: true, pullback: 5, sr: 1.5 }]];
+    const defs = [['base', 'Plain rules', {}], ['htf', 'Higher-timeframe trend agrees', { htf: true }], ['adx', 'Trend strength (ADX 20+)', { adx: 20 }], ['sr', 'Room to move: no support/resistance within 1.5R', { sr: 1.5 }]];
     const results = [];
     for (const [id, name, cfg] of defs) {
       if (cfg.htf && !htfTf) { results.push({ id, name, unavailable: 'Needs a higher timeframe, and none is available above 4h' }); continue; }
-      const r = E.backtest(closed, o.tf, p, { spread, maxBars: MAX_BARS, accept: E.buildAccept(closed, o.tf, cfg, htfC, htfTf) });
+      const r = E.backtest(closed, o.tf, p, { spread, slippage, maxBars: MAX_BARS, accept: E.buildAccept(closed, o.tf, cfg, htfC, htfTf) });
       results.push({ id, name, all: pack(r.all), development: pack(r.development), outOfSample: pack(r.outOfSample) });
     }
     const base = results[0]; results.forEach(r => { if (!r.unavailable) r.verdict = r.id === 'base' ? 'Baseline' : verdict(base, r); });
     const out = { dataset: { provider: d.source, symbol: o.symbol, tf: o.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, excludedCandles: san.excluded.length, higherTimeframe: htfTf || null },
-      strategy: p.version, spread, assumptions: ASSUMPTIONS + ' One position at a time. Spread charged as spread/risk in R. First 70% of time = development, last 30% = out-of-sample.', results };
-    store.saveBacktest({ lab: true, symbol: o.symbol, tf: o.tf, spread }, out, now()); return out;
+      strategy: p.version, spread, slippagePips: slipPips, slippage: Number(slippage.toPrecision(6)), assumptions: LAB_ASSUMPTIONS, results };
+    store.saveBacktest({ lab: true, symbol: o.symbol, tf: o.tf, spread, slippagePips: slipPips }, out, now()); return out;
   }
   // ---- Signal Audit: track any outside provider's signals against real prices ----
   let lastAudit = 0; const M15 = 900000;

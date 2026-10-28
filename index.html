@@ -102,20 +102,32 @@ async function trades(sub){sub=['open','closed','all'].includes(sub)?sub:'open';
  $('#view').innerHTML=seg('trades',[['open','Open'],['closed','Closed'],['all','All']],sub)+head+(rows.map(tradeCard).join('')||'<div class="card mut">Nothing here yet. Signals are recorded automatically when all the rules are met.</div>')}
 
 /* ---------- LAB: do the filters really help? ---------- */
+let PAIR_WAIT=30000;const LAB_PAIRS=['EUR/USD','GBP/USD','USD/JPY'],sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const labRow=(l,a,b)=>`<tr><td>${l}</td><td>${a}</td><td>${b}</td></tr>`;
+function labHtml(r){const d=r.dataset,col=x=>x.net;
+ return `<div class="card"><b>${esc(d.symbol)} ${esc(d.tf)}</b><div class="mut note">${d.candles} candles from ${tm(d.first)} to ${tm(d.last)}${d.higherTimeframe?`; trend filter uses ${esc(d.higherTimeframe)} candles`:''}${d.excludedCandles?`; ${d.excludedCandles} bad candle(s) skipped`:''}. Spread ${esc(r.spread)} and slippage ${esc(r.slippagePips)} pips (${esc(r.slippage)} price units). Results are after both costs.</div><div class="note"><b>How to read it:</b> look at average R per trade. A filter only counts if it beats the plain rules in both periods and each period has at least 30 trades.</div></div>`
+ +r.results.map(x=>x.unavailable?`<div class="card"><b>${esc(x.name)}</b><p class="mut">${esc(x.unavailable)}.</p></div>`
+  :`<div class="card"><div class="row sp"><b>${esc(x.name)}</b><span class="chip ${/Better/.test(x.verdict)?'ok':'warn'}">${esc(x.verdict)}</span></div><table><tr><th></th><th>Development</th><th>Out-of-sample</th></tr>`
+   +labRow('Finished trades',col(x.development).resolved,col(x.outOfSample).resolved)+labRow('Win rate',pc(col(x.development).winRate),pc(col(x.outOfSample).winRate))
+   +labRow('Avg R per trade',R(col(x.development).avgR),R(col(x.outOfSample).avgR))+labRow('Profit factor',n2(col(x.development).profitFactor),n2(col(x.outOfSample).profitFactor))
+   +labRow('Worst drop',n2(col(x.development).maxDrawdownR)+'R',n2(col(x.outOfSample).maxDrawdownR)+'R')+labRow('Total',R(col(x.development).cumulativeR),R(col(x.outOfSample).cumulativeR))+'</table></div>').join('')
+ +`<div class="card mut note">${esc(r.assumptions)} Out-of-sample means the last 30% of the history, which was not used to choose the filters. If you keep trying variations until one looks good, it will probably be luck.</div>`}
 async function lab(){$('#view').innerHTML=`<div class="card"><h2>Filter Lab</h2><p class="mut">Runs the same real price history through the plain rules and then through each filter, so you can see whether a filter truly helps. Costs are included.</p><div class="row">${pairSel()}</div>
- <label for="sp">Spread in price units (rough typical value, replace it with your broker's)</label><input id="sp" type="number" step="any" min="0" value="${TYP[S.sym]}"><div style="margin-top:10px"><button id="go">Run comparison</button></div></div><div id="out"></div>`;
- bindSel(lab);
- $('#go').onclick=async()=>{const out=$('#out');out.innerHTML='<div class="card mut">Running. This downloads up to 5,000 candles, so it can take a few seconds…</div>';$('#go').disabled=true;
-  try{const r=await post('/api/lab',{symbol:S.sym,tf:S.tf,spread:$('#sp').value}),d=r.dataset;
-   const row=(l,a,b)=>`<tr><td>${l}</td><td>${a}</td><td>${b}</td></tr>`,col=x=>x.net;
-   out.innerHTML=`<div class="card"><b>${esc(d.symbol)} ${esc(d.tf)}</b><div class="mut note">${d.candles} candles from ${tm(d.first)} to ${tm(d.last)}${d.higherTimeframe?`; trend filter uses ${esc(d.higherTimeframe)}`:''}${d.excludedCandles?`; ${d.excludedCandles} bad candle(s) skipped`:''}. Spread ${esc(r.spread)}. Results are after spread.</div><div class="note"><b>How to read it:</b> look at average R per trade. A filter only counts if it beats the plain rules in both periods and each period has at least 30 trades.</div></div>`
-   +r.results.map(x=>x.unavailable?`<div class="card"><b>${esc(x.name)}</b><p class="mut">${esc(x.unavailable)}.</p></div>`
-    :`<div class="card"><div class="row sp"><b>${esc(x.name)}</b><span class="chip ${/Better/.test(x.verdict)?'ok':'warn'}">${esc(x.verdict)}</span></div><table><tr><th></th><th>Development</th><th>Out-of-sample</th></tr>`
-     +row('Finished trades',col(x.development).resolved,col(x.outOfSample).resolved)+row('Win rate',pc(col(x.development).winRate),pc(col(x.outOfSample).winRate))
-     +row('Avg R per trade',R(col(x.development).avgR),R(col(x.outOfSample).avgR))+row('Profit factor',n2(col(x.development).profitFactor),n2(col(x.outOfSample).profitFactor))
-     +row('Worst drop',n2(col(x.development).maxDrawdownR)+'R',n2(col(x.outOfSample).maxDrawdownR)+'R')+row('Total',R(col(x.development).cumulativeR),R(col(x.outOfSample).cumulativeR))+'</table></div>').join('')
-   +`<div class="card mut note">${esc(r.assumptions)} Out-of-sample means the last 30% of the history, which was not used to choose the filters. If you keep trying variations until one looks good, it will probably be luck.</div>`}
-  catch(e){out.innerHTML=`<div class="card err">${esc(e.message)}</div>`}$('#go').disabled=false}}
+ <label for="sp">Spread in price units (rough typical value, replace it with your broker's)</label><input id="sp" type="number" step="any" min="0" value="${TYP[S.sym]}">
+ <label for="sl">Slippage in pips (extra cost of a worse fill, charged like the spread)</label><input id="sl" type="number" step="any" min="0" max="50" value="0.5">
+ <div class="row" style="margin-top:10px"><button id="go">Run comparison</button><button id="all" class="ghost">Run all pairs</button></div>
+ <div class="mut note">Run all pairs tests EUR/USD, GBP/USD and USD/JPY on the selected timeframe, one at a time, using typical spreads for each pair and the slippage above. It waits between pairs to stay inside the data provider's free limit, so it takes a couple of minutes.</div><div id="prog" class="note"></div></div><div id="out"></div>`;
+ bindSel(lab);const busy=b=>{['#go','#all'].forEach(s=>{const e=$(s);if(e)e.disabled=b})},prog=t=>{const e=$('#prog');if(e)e.textContent=t};
+ $('#go').onclick=async()=>{const out=$('#out');out.innerHTML='<div class="card mut">Running. This downloads up to 5,000 candles, so it can take a few seconds…</div>';busy(true);
+  try{const r=await post('/api/lab',{symbol:S.sym,tf:S.tf,spread:$('#sp').value,slippagePips:$('#sl').value});if($('#out'))$('#out').innerHTML=labHtml(r)}catch(e){if($('#out'))$('#out').innerHTML=`<div class="card err">${esc(e.message)}</div>`}busy(false)};
+ $('#all').onclick=async()=>{busy(true);let html='';if($('#out'))$('#out').innerHTML='';const sl=$('#sl').value;
+  for(let i=0;i<LAB_PAIRS.length;i++){const sy=LAB_PAIRS[i];if(!$('#out'))return;
+   if(i>0)for(let s=Math.ceil(PAIR_WAIT/1000);s>0;s--){prog(`Waiting ${s}s before ${sy}, to respect the data provider's free limit…`);await sleep(Math.min(1000,PAIR_WAIT))}
+   prog(`Running ${sy} (${i+1} of ${LAB_PAIRS.length})…`);
+   try{const r=await post('/api/lab',{symbol:sy,tf:S.tf,spread:TYP[sy],slippagePips:sl});html+=`<h2 style="margin:6px 2px">${esc(sy)}</h2>`+labHtml(r)}
+   catch(e){const lim=/rate limit/i.test(e.message);html+=`<div class="card err"><b>${esc(sy)}: ${lim?'Rate limit reached':'Could not run'}</b><p>${esc(e.message)}</p>${lim?'<p>The data provider\'s free limit was hit, so the run stopped here. Wait about a minute, then tap Run all pairs again. Pairs that finished are kept above.</p>':''}</div>`;if($('#out'))$('#out').innerHTML=html;if(lim)break}
+   if($('#out'))$('#out').innerHTML=html}
+  prog('');busy(false)}}
 
 /* ---------- AUDIT: check any outside provider's claims ---------- */
 async function audit(){const list=await api('/api/audit');
