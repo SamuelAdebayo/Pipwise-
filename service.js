@@ -5,6 +5,8 @@ const MAX_BARS = 48, HTF = { '15min': '1h', '1h': '4h', '4h': '1day' }; // highe
 const pipSize = s => (s.includes('JPY') ? 0.01 : s.startsWith('XAU') ? 0.1 : 0.0001); // price units per pip (XAU/USD: 1 pip = 0.10)
 const LAB_ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. Spread and slippage are both charged as cost / risk in R, using the values you entered; gaps are not modelled. One position at a time. First 70% of time = development, last 30% = out-of-sample.`;
 const ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. No spread, slippage or gaps modelled.`;
+const fmt = (s, x) => Number(x).toFixed(s.includes('JPY') ? 3 : s.startsWith('XAU') ? 2 : 5);
+const OUTCOME_TEXT = { target: r => `WIN +${r}R (target hit)`, stop: r => `LOSS ${r}R (stop hit)`, ambiguous: () => 'UNCLEAR (stop and target in the same candle)', expired: () => `EXPIRED (no result after ${MAX_BARS} candles)` };
 const version = p => `v1|bull${p.rsiBull.join('-')}|bear${p.rsiBear.join('-')}|atr${p.atrStop}|rr${p.rr}`;
 
 function cleanParams(i = {}) {
@@ -49,7 +51,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       if (r.status === 'open') continue;
       store.tx(() => {
         if (store.resolveSignal(s.id, r.status, r.r, future[r.bars - 1].t, ASSUMPTIONS))
-          store.addAlert(`out:${s.id}`, 'outcome', `${s.symbol} ${s.tf} ${s.dir} signal: ${r.status}${r.r != null ? ` (${r.r}R)` : ''}`, now());
+          store.addAlert(`out:${s.id}`, 'outcome', `${s.symbol} ${s.tf} ${s.dir}: ${OUTCOME_TEXT[r.status](r.r)}\nEntry ${fmt(s.symbol, s.entry)} · Stop ${fmt(s.symbol, s.stop)} · Target ${fmt(s.symbol, s.target)}`, now());
       });
     }
     return limited;
@@ -68,14 +70,14 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     if (stale) store.addAlert(`stale:${symbol}:${tf}:${last ? last.t : 0}`, 'stale_data', `${symbol} ${tf}: latest closed candle is stale`, now());
     const ind = E.indicators(closed), i = closed.length - 1;
     const sig = i >= 0 ? E.signalAt(ind, closed, i, p) : { signal: 'WAIT', rules: [], levels: null };
-    let recorded = null;
-    if (!stale && sig.levels && !store.openSignals(symbol, tf).some(s => s.dir === sig.signal)) {
-      recorded = store.addSignal({ symbol, tf, dir: sig.signal, strategy: p.version, params: p, candle_t: last.t, provider: d.source, ...sig.levels, indicators: { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] }, created_at: now() });
-      if (recorded) store.addAlert(`sig:${recorded}`, 'new_signal', `${symbol} ${tf}: new ${sig.signal} signal at ${sig.levels.entry}`, now());
-    }
     const ms = E.TF_MIN[tf] * 60000, raw = cc[cc.length - 1];
     const live = raw && raw.t + ms > now() ? { price: raw.c, t: raw.t } : null, livePx = live ? live.price : last ? last.c : null; // live = price of the still-forming candle
     const entryCheck = sig.levels ? E.entryCheck(sig.signal, sig.levels, livePx, { barsOld: last ? Math.max(0, Math.floor((now() - (last.t + ms)) / ms)) : 0 }) : null;
+    let recorded = null;
+    if (!stale && sig.levels && !store.openSignals(symbol, tf).some(s => s.dir === sig.signal)) {
+      recorded = store.addSignal({ symbol, tf, dir: sig.signal, strategy: p.version, params: p, candle_t: last.t, provider: d.source, ...sig.levels, indicators: { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] }, created_at: now() });
+      if (recorded) store.addAlert(`sig:${recorded}`, 'new_signal', `${symbol} ${tf}: new ${sig.signal} signal\nEntry ${fmt(symbol, sig.levels.entry)} · Stop ${fmt(symbol, sig.levels.stop)} · Target ${fmt(symbol, sig.levels.target)}\nReward:risk ${sig.levels.rr}:1 · Entry check: ${entryCheck ? entryCheck.state : 'n/a'}\nExperimental rules, not a prediction. Check the app before acting.`, now());
+    }
     const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120);
     return { ok: true, fromCache: !!d.fromCache, cacheAgeSec: d.cacheAgeSec || 0, excludedCandles: clean.excluded.length, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
       signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
