@@ -19,7 +19,7 @@ function createApp({ service, store, config }) {
       if (!authed(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Pipwise"' }); return res.end('Authentication required'); }
       const u = new URL(req.url, 'http://x'), p = u.pathname;
       if (req.method === 'GET' && p === '/') return send(res, 200, page, 'text/html; charset=utf-8');
-      if (req.method === 'GET' && p === '/api/config') return send(res, 200, { instruments: INSTRUMENTS, timeframes: Object.keys(E.TF_MIN), tz: tz(), hasKey: config.hasKey, storage: { path: (config.storage || {}).path || '', isDefault: !!(config.storage || {}).isDefault, createdAt: Number(store.getSetting('db_created_at')) || null }, telegram: { token: !!(config.telegram || {}).token, chat: !!(config.telegram || {}).chat }, params: service.params(), note: 'XAU/USD works only if your data plan includes it.' });
+      if (req.method === 'GET' && p === '/api/config') return send(res, 200, { instruments: INSTRUMENTS, timeframes: Object.keys(E.TF_MIN), tz: tz(), hasKey: config.hasKey, storage: { path: (config.storage || {}).path || '', isDefault: !!(config.storage || {}).isDefault, createdAt: Number(store.getSetting('db_created_at')) || null }, telegram: { token: !!(config.telegram || {}).token, chat: !!(config.telegram || {}).chat, problems: (config.telegram || {}).problems || [] }, params: service.params(), note: 'XAU/USD works only if your data plan includes it.' });
       if (req.method === 'GET' && p === '/api/snapshot') { if (!config.hasKey) return send(res, 200, { setup: true }); return send(res, 200, await service.snapshot(...pair(u), u.searchParams.get('force') === '1')); }
       if (req.method === 'GET' && p === '/api/signals') { const s = u.searchParams.get('status'); if (s && !['open', 'closed'].includes(s)) throw new Error('Bad status'); if (config.hasKey) await service.trackAll(); return send(res, 200, await service.enrich(store.listSignals({ status: s }))); }
       if (req.method === 'GET' && p === '/api/scan') { const sy = u.searchParams.get('symbol'); if (!INSTRUMENTS.includes(sy)) throw new Error('Unsupported symbol'); return send(res, 200, config.hasKey ? await service.scan(sy) : []); }
@@ -51,9 +51,10 @@ if (require.main === module) {
   const dbPath = process.env.DB_PATH || path.join(__dirname, 'pipwise.db'); // if this fails the server stops loudly; it never switches to temporary storage
   const store = require('./store').open(dbPath);
   const provider = require('./provider'), { createService } = require('./service'), { createScheduler, parseWatchlist } = require('./scheduler'), N = require('./notifier'), env = process.env;
-  const tgToken = env.TELEGRAM_BOT_TOKEN || '', tgChat = env.TELEGRAM_CHAT_ID || '';
+  const tgCheck = N.checkToken(env.TELEGRAM_BOT_TOKEN), tgToken = tgCheck.token, tgChat = String(env.TELEGRAM_CHAT_ID || '').replace(/\s+/g, ''), tgRaw = !!String(env.TELEGRAM_BOT_TOKEN || '').trim();
+  const tgFail = () => { throw new Error(`TELEGRAM_BOT_TOKEN problem: ${tgCheck.problems.join('; ')}. Copy it again from BotFather.`); };
   const config = { password: env.PIPWISE_PASSWORD || '', tz: env.TIMEZONE || 'Africa/Lagos', hasKey: !!env.TWELVEDATA_API_KEY,
-    storage: { path: dbPath, isDefault: !env.DB_PATH }, telegram: { token: !!tgToken, chat: !!tgChat, discover: () => N.discoverChatId(tgToken), test: () => N.send({ token: tgToken, chatId: tgChat }, 'Pipwise test message: alerts are working.') } };
+    storage: { path: dbPath, isDefault: !env.DB_PATH }, telegram: { token: tgRaw, chat: !!tgChat, problems: tgCheck.problems, discover: () => (tgToken ? N.discoverChatId(tgToken) : tgFail()), test: () => (tgToken ? N.send({ token: tgToken, chatId: tgChat }, 'Pipwise test message: alerts are working.') : tgFail()) } };
   const host = env.HOST || '127.0.0.1', port = Number(env.PORT || 3000);
   if (host !== '127.0.0.1' && !config.password) { console.error('Refusing to listen on a public address without PIPWISE_PASSWORD.'); process.exit(1); }
   const service = createService({ store, fetchCandles: provider.fetchCandles });
@@ -62,5 +63,5 @@ if (require.main === module) {
   const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, deliver: async () => { await service.trackAll().catch(() => {}); await service.auditTrack().catch(() => {}); return deliver(); } });
   let busy = false; const run = async () => { if (busy) return; busy = true; try { await sch.tick(); } catch { console.error('Background check failed'); } finally { busy = false; } };
   if (config.hasKey && watch.length) { setTimeout(run, 5000); setInterval(run, 60000); }
-  http.createServer(createApp({ service, store, config })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
+  http.createServer(createApp({ service, store, config })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
 }
