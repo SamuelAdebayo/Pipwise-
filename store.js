@@ -23,7 +23,8 @@ CREATE TABLE experiments(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind I
  status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN('proposed','queued','running','completed','rejected','blocked','awaiting_validation')),
  priority INTEGER NOT NULL DEFAULT 5, retry_count INTEGER NOT NULL DEFAULT 0, needs_validation INTEGER NOT NULL DEFAULT 1, result TEXT, error TEXT, rejection_reason TEXT,
  dedupe_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER);
-CREATE INDEX idx_exp_status ON experiments(status,priority);`];
+CREATE INDEX idx_exp_status ON experiments(status,priority);`,
+`ALTER TABLE experiments ADD COLUMN not_before INTEGER;`];
 // The strategy Pipwise already uses, written down as data so new strategies can be compared with it. The live engine does not read this.
 const BASELINE_RULES = { entry: { BUY: ['EMA50 > EMA200', 'EMA20 > EMA50', 'RSI14 inside the BUY range', 'close > EMA20'], SELL: ['EMA50 < EMA200', 'EMA20 < EMA50', 'RSI14 inside the SELL range', 'close < EMA20'] },
   stop: 'atrStop x ATR14 from the entry', target: 'rr x the stop distance', defaults: { rsiBull: [50, 70], rsiBear: [30, 50], atrStop: 1.5, rr: 2 }, timeframes: ['15min', '1h', '4h'] };
@@ -37,7 +38,7 @@ const TABLES = {
   backtests: ['id', 'config', 'result', 'created_at'],
   strategies: ['id', 'name', 'origin', 'description', 'created_at'],
   strategy_versions: ['id', 'strategy_id', 'version', 'rules', 'status', 'source_url', 'created_at'],
-  experiments: ['id', 'kind', 'objective', 'hypothesis', 'origin', 'strategy_id', 'strategy_version', 'symbol', 'tf', 'params', 'data_range', 'settings', 'status', 'priority', 'retry_count', 'needs_validation', 'result', 'error', 'rejection_reason', 'dedupe_key', 'created_at', 'updated_at', 'started_at', 'finished_at'],
+  experiments: ['id', 'kind', 'objective', 'hypothesis', 'origin', 'strategy_id', 'strategy_version', 'symbol', 'tf', 'params', 'data_range', 'settings', 'status', 'priority', 'retry_count', 'needs_validation', 'result', 'error', 'rejection_reason', 'dedupe_key', 'created_at', 'updated_at', 'started_at', 'finished_at', 'not_before'],
 };
 function open(path = ':memory:') {
   const db = new DatabaseSync(path);
@@ -105,10 +106,25 @@ function open(path = ':memory:') {
     saveBacktest: (config, result, now) => Number(q(`INSERT INTO backtests(config,result,created_at) VALUES(?,?,?)`).run(JSON.stringify(config), JSON.stringify(result), now).lastInsertRowid),
     listStrategies: () => q(`SELECT * FROM strategies ORDER BY created_at`).all().map(st => ({ ...st, versions: q(`SELECT id,version,rules,status,source_url,created_at FROM strategy_versions WHERE strategy_id=? ORDER BY id`).all(st.id).map(v => ({ ...v, rules: JSON.parse(v.rules) })) })),
     addExperiment(e) { // records a research task; returns null if the same task (dedupe_key) already exists
-      const t = e.now || Date.now(), r = q(`INSERT INTO experiments(kind,objective,hypothesis,origin,strategy_id,strategy_version,symbol,tf,params,data_range,settings,priority,needs_validation,dedupe_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`)
-        .run(e.kind || 'manual', e.objective, e.hypothesis ?? null, e.origin ?? null, e.strategy_id, e.strategy_version, e.symbol ?? null, e.tf ?? null, e.params ? JSON.stringify(e.params) : null, e.data_range ? JSON.stringify(e.data_range) : null, e.settings ? JSON.stringify(e.settings) : null, e.priority ?? 5, e.needs_validation === false ? 0 : 1, e.dedupe_key, t, t);
+      const t = e.now || Date.now(), j = x => (x ? JSON.stringify(x) : null), r = q(`INSERT INTO experiments(kind,objective,hypothesis,origin,strategy_id,strategy_version,symbol,tf,params,data_range,settings,status,priority,needs_validation,dedupe_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`)
+        .run(e.kind || 'manual', e.objective, e.hypothesis ?? null, e.origin ?? null, e.strategy_id, e.strategy_version, e.symbol ?? null, e.tf ?? null, j(e.params), j(e.data_range), j(e.settings), e.status || 'proposed', e.priority ?? 5, e.needs_validation === false ? 0 : 1, e.dedupe_key, t, t);
       return r.changes ? Number(r.lastInsertRowid) : null;
     },
+    claimExperiment: (now = Date.now()) => tx(() => { // takes the next waiting test; only one caller can ever get a given test
+      const row = q(`SELECT * FROM experiments WHERE status='queued' AND (not_before IS NULL OR not_before<=?) ORDER BY priority ASC, id ASC LIMIT 1`).get(now);
+      return row && q(`UPDATE experiments SET status='running', started_at=?, updated_at=? WHERE id=? AND status='queued'`).run(now, now, row.id).changes ? { ...row, status: 'running', started_at: now } : null;
+    }),
+    finishExperiment: (id, o) => q(`UPDATE experiments SET status=?, result=?, rejection_reason=?, needs_validation=?, error=NULL, finished_at=?, updated_at=? WHERE id=? AND status='running'`) // only a running test can be finished, so a result is never recorded twice
+      .run(o.status, JSON.stringify(o.result), o.rejection_reason ?? null, o.status === 'awaiting_validation' ? 1 : 0, o.now, o.now, id).changes,
+    failExperiment(id, o) { // temporary problems retry later with growing waits; anything else, or too many tries, becomes "blocked"
+      const row = q(`SELECT retry_count FROM experiments WHERE id=? AND status='running'`).get(id); if (!row) return 0;
+      const n = row.retry_count + 1, again = !!o.retryable && n < o.maxRetries;
+      return q(`UPDATE experiments SET status=?, retry_count=?, error=?, not_before=?, updated_at=? WHERE id=? AND status='running'`).run(again ? 'queued' : 'blocked', n, String(o.error).slice(0, 300), again ? o.now + o.backoffMs * 2 ** (n - 1) : null, o.now, id).changes;
+    },
+    recoverInterrupted: (now, maxRetries) => tx(() => { let n = 0; for (const r of q(`SELECT id,retry_count FROM experiments WHERE status='running'`).all()) { const c = r.retry_count + 1; n += q(`UPDATE experiments SET status=?, retry_count=?, error='Interrupted by a restart', updated_at=? WHERE id=?`).run(c >= maxRetries ? 'blocked' : 'queued', c, now, r.id).changes; } return n; }),
+    requeueExperiment: (id, now) => q(`UPDATE experiments SET status='queued', retry_count=0, error=NULL, not_before=NULL, updated_at=? WHERE id=? AND status='blocked'`).run(now, id).changes,
+    finishedSince: t => q(`SELECT COUNT(*) AS n FROM experiments WHERE finished_at>=?`).get(t).n,
+    hasStrategyVersion: (id, v) => !!q(`SELECT 1 FROM strategy_versions WHERE strategy_id=? AND version=?`).get(id, v),
     listExperiments: (limit = 100) => q(`SELECT * FROM experiments ORDER BY id DESC LIMIT ?`).all(Math.min(limit, 500)),
     listBacktests: () => q(`SELECT id,config,created_at FROM backtests ORDER BY id DESC LIMIT 20`).all(),
   };

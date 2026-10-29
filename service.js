@@ -146,9 +146,9 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
   const pick = m => ({ resolved: m.resolved, winRate: m.winRate, avgR: m.avgR, profitFactor: m.profitFactor, maxDrawdownR: m.maxDrawdownR, cumulativeR: m.cumulativeR });
   const pack = s => ({ signals: s.signals, open: s.open, ambiguous: s.ambiguous, expired: s.expired, gross: pick(s.gross), net: pick(s.costAdjusted) });
   function verdict(base, v) {
-    const d = v.development.gross, o = v.outOfSample.gross;
+    const d = v.development.net, o = v.outOfSample.net; // the same after-cost numbers the Lab shows
     if (d.resolved < 30 || o.resolved < 30) return 'Too few trades to judge';
-    const better = (a, b) => a.avgR > b.avgR, bd = better(d, base.development.gross), bo = better(o, base.outOfSample.gross);
+    const better = (a, b) => a.avgR > b.avgR, bd = better(d, base.development.net), bo = better(o, base.outOfSample.net);
     return bd && bo ? 'Better than plain rules in both periods' : !bd && !bo ? 'Not better than plain rules' : 'Mixed: better in only one period';
   }
   async function lab(o) {
@@ -214,7 +214,19 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
         metrics: E.metrics(list.filter(s => s.r != null).map(s => s.r)), pipwise: { signals: mm.signals, metrics: mm.gross, from, to }, list };
     });
   }
+  // Runs one queued experiment: the strategy with the requested filters, and the plain rules on identical data for comparison.
+  async function experimentRun(x) {
+    const p = cleanParams(x.strategyParams), slipPips = Number(x.slippagePips ?? 0.5), slippage = slipPips * pipSize(x.symbol), spread = Number(x.spread || 0), has = Object.keys(x.filters || {}).length > 0;
+    const d = await load(x.symbol, x.tf, 5000), san = E.sanitize(d.candles), closed = E.closedOnly(san.candles, x.tf, now());
+    if (closed.length < 400) throw new Error('Not enough history (need 400+ closed candles)');
+    let htfC = null; const htfTf = x.filters && x.filters.htf ? HTF[x.tf] : null; if (htfTf) htfC = E.closedOnly(E.sanitize((await load(x.symbol, htfTf, 5000)).candles).candles, htfTf, now());
+    const run = cfg => E.backtest(closed, x.tf, p, { spread, slippage, maxBars: MAX_BARS, accept: E.buildAccept(closed, x.tf, cfg, htfC, htfTf) });
+    const base = run({}), variant = has ? run(x.filters) : base, sum = r => ({ all: pack(r.all), development: pack(r.development), outOfSample: pack(r.outOfSample) });
+    return { dataset: { provider: d.source, symbol: x.symbol, tf: x.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, excludedCandles: san.excluded.length, higherTimeframe: htfTf, fromCache: !!d.fromCache },
+      strategy: p.version, filters: x.filters || {}, spread, slippagePips: slipPips, slippage: Number(slippage.toPrecision(6)), assumptions: LAB_ASSUMPTIONS, baseline: sum(base), variant: sum(variant) };
+  }
+  const callsInLastMinute = () => { const t = now(); while (calls.length && t - calls[0] > 60000) calls.shift(); return calls.length; };
   const resetTracking = () => { for (const k of Object.keys(lastTracked)) delete lastTracked[k]; for (const k of Object.keys(att)) delete att[k]; }; // forces the next check to look at every open trade again
-  return { resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
+  return { experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };
