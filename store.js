@@ -104,6 +104,10 @@ function open(path = ':memory:') {
     getSetting: k => (q(`SELECT value FROM settings WHERE key=?`).get(k) || {}).value,
     setSetting: (k, v) => q(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(k, String(v)),
     saveBacktest: (config, result, now) => Number(q(`INSERT INTO backtests(config,result,created_at) VALUES(?,?,?)`).run(JSON.stringify(config), JSON.stringify(result), now).lastInsertRowid),
+    registerStrategy(def, ver, now = Date.now()) { // adds a library strategy and one parameter version to the registry (safe to repeat)
+      db.prepare(`INSERT OR IGNORE INTO strategies(id,name,origin,description,created_at) VALUES(?,?,?,?,?)`).run(def.id, def.name, 'library', def.description, now);
+      db.prepare(`INSERT OR IGNORE INTO strategy_versions(strategy_id,version,rules,status,source_url,created_at) VALUES(?,?,?,?,?,?)`).run(def.id, ver.label, JSON.stringify({ params: ver.params, description: def.description, risk: '1.5 x ATR14 stop, 2R target, same for every strategy', note: 'The source explains the indicator only; no performance claim is relied on.' }), 'candidate', def.source || null, now);
+    },
     listStrategies: () => q(`SELECT * FROM strategies ORDER BY created_at`).all().map(st => ({ ...st, versions: q(`SELECT id,version,rules,status,source_url,created_at FROM strategy_versions WHERE strategy_id=? ORDER BY id`).all(st.id).map(v => ({ ...v, rules: JSON.parse(v.rules) })) })),
     addExperiment(e) { // records a research task; returns null if the same task (dedupe_key) already exists
       const t = e.now || Date.now(), j = x => (x ? JSON.stringify(x) : null), r = q(`INSERT INTO experiments(kind,objective,hypothesis,origin,strategy_id,strategy_version,symbol,tf,params,data_range,settings,status,priority,needs_validation,dedupe_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`)
@@ -123,6 +127,7 @@ function open(path = ':memory:') {
     },
     recoverInterrupted: (now, maxRetries) => tx(() => { let n = 0; for (const r of q(`SELECT id,retry_count FROM experiments WHERE status='running'`).all()) { const c = r.retry_count + 1; n += q(`UPDATE experiments SET status=?, retry_count=?, error='Interrupted by a restart', updated_at=? WHERE id=?`).run(c >= maxRetries ? 'blocked' : 'queued', c, now, r.id).changes; } return n; }),
     requeueExperiment: (id, now) => q(`UPDATE experiments SET status='queued', retry_count=0, error=NULL, not_before=NULL, updated_at=? WHERE id=? AND status='blocked'`).run(now, id).changes,
+    experimentCounts: () => Object.fromEntries(q(`SELECT status, COUNT(*) AS n FROM experiments GROUP BY status`).all().map(r => [r.status, r.n])),
     finishedSince: t => q(`SELECT COUNT(*) AS n FROM experiments WHERE finished_at>=?`).get(t).n,
     hasStrategyVersion: (id, v) => !!q(`SELECT 1 FROM strategy_versions WHERE strategy_id=? AND version=?`).get(id, v),
     listExperiments: (limit = 100) => q(`SELECT * FROM experiments ORDER BY id DESC LIMIT ?`).all(Math.min(limit, 500)),

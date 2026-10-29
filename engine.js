@@ -106,7 +106,7 @@ function backtest(c, tf, p = DEFAULTS, o = {}) { // o.accept(i, dir) can veto a 
   const ind = indicators(c), trades = []; let busy = -1;
   for (let i = 200; i < c.length; i++) {
     if (i <= busy || (from && c[i].t < from) || (to && c[i].t > to)) continue;
-    const s = signalAt(ind, c, i, p); if (s.signal === 'WAIT' || !s.levels) continue;
+    const s = o.signalFn ? o.signalFn(i) : signalAt(ind, c, i, p); if (s.signal === 'WAIT' || !s.levels) continue; // o.signalFn lets another strategy supply the signal
     if (o.accept && !o.accept(i, s.signal, s.levels)) continue;
     const r = resolve(s, c.slice(i + 1, i + 1 + maxBars), maxBars), cost = (spread + slippage) / s.levels.risk;
     trades.push({ t: s.t, dir: s.signal, status: r.status, r: r.r, netR: r.r == null ? null : r.r - cost, levels: s.levels });

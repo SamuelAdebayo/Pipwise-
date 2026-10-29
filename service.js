@@ -225,8 +225,19 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     return { dataset: { provider: d.source, symbol: x.symbol, tf: x.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, excludedCandles: san.excluded.length, higherTimeframe: htfTf, fromCache: !!d.fromCache },
       strategy: p.version, filters: x.filters || {}, spread, slippagePips: slipPips, slippage: Number(slippage.toPrecision(6)), assumptions: LAB_ASSUMPTIONS, baseline: sum(base), variant: sum(variant) };
   }
+  // Runs one library strategy version on real candles: the shared backtester, the shared costs, plus a check of how steady the result is over time.
+  const TYPICAL_SPREAD = { 'EUR/USD': 0.00008, 'GBP/USD': 0.0001, 'USD/JPY': 0.008, 'GBP/JPY': 0.02, 'XAU/USD': 0.3 }; // rough typical values, labelled as assumptions in every result
+  async function strategyRun(x) {
+    const S = require('./strategies'), def = S.find(x.strategy_id), ver = def && def.versions.find(v => v.label === x.version); if (!ver) throw new Error('Unknown strategy version');
+    const slipPips = Number(x.slippagePips ?? 0.5), slippage = slipPips * pipSize(x.symbol), spread = Number(x.spread || 0);
+    const d = await load(x.symbol, x.tf, 5000), san = E.sanitize(d.candles), closed = E.closedOnly(san.candles, x.tf, now()); if (closed.length < 400) throw new Error('Not enough history (need 400+ closed candles)');
+    const res = S.backtestStrategy(closed, x.tf, def, ver.params, { spread, slippage, maxBars: MAX_BARS });
+    return { dataset: { provider: d.source, symbol: x.symbol, tf: x.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, excludedCandles: san.excluded.length, fromCache: !!d.fromCache },
+      strategy: `${x.strategy_id}/${x.version}`, spread, slippagePips: slipPips, slippage: Number(slippage.toPrecision(6)), assumptions: LAB_ASSUMPTIONS + ' Every library strategy uses the same 1.5 x ATR stop and 2R target.',
+      result: { all: pack(res.all), development: pack(res.development), outOfSample: pack(res.outOfSample) }, segments: S.segments(res.trades, closed) };
+  }
   const callsInLastMinute = () => { const t = now(); while (calls.length && t - calls[0] > 60000) calls.shift(); return calls.length; };
   const resetTracking = () => { for (const k of Object.keys(lastTracked)) delete lastTracked[k]; for (const k of Object.keys(att)) delete att[k]; }; // forces the next check to look at every open trade again
-  return { experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
+  return { strategyRun, typicalSpread: s => TYPICAL_SPREAD[s] ?? 0, experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };

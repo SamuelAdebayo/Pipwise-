@@ -25,7 +25,9 @@ function createApp({ service, store, config, runner }) {
       if (req.method === 'GET' && p === '/api/signals') { const s = u.searchParams.get('status'); if (s && !['open', 'closed'].includes(s)) throw new Error('Bad status'); if (config.hasKey) await service.trackAll(); return send(res, 200, await service.enrich(store.listSignals({ status: s }))); }
       if (req.method === 'GET' && p === '/api/scan') { const sy = u.searchParams.get('symbol'); if (!INSTRUMENTS.includes(sy)) throw new Error('Unsupported symbol'); return send(res, 200, config.hasKey ? await service.scan(sy) : []); }
       if (req.method === 'GET' && p === '/api/strategies') return send(res, 200, store.listStrategies());
-      if (req.method === 'GET' && p === '/api/experiments') return send(res, 200, store.listExperiments().map(e => ({ ...e, params: pj(e.params), settings: pj(e.settings), result: pj(e.result) })));
+      if (req.method === 'GET' && p === '/api/research/overview') return send(res, 200, { counts: store.experimentCounts(), lastSweep: store.getSetting('last_sweep') || null, ...require('./experiments').candidates(store) });
+      if (req.method === 'POST' && p === '/api/research/sweep') { if (!runner) throw new Error('The research runner is not available'); return send(res, 200, runner.planSweep(await body(req))); }
+      if (req.method === 'GET' && p === '/api/experiments') return send(res, 200, store.listExperiments(Math.min(Number(u.searchParams.get('limit')) || 100, 200)).map(e => ({ ...e, params: pj(e.params), settings: pj(e.settings), result: pj(e.result) })));
       if (req.method === 'POST' && p === '/api/experiments') { if (!runner) throw new Error('The research runner is not available'); return send(res, 200, runner.enqueue(await body(req))); }
       if (req.method === 'POST' && p === '/api/experiments/requeue') return send(res, 200, { requeued: store.requeueExperiment(Number((await body(req)).id), Date.now()) });
       if (req.method === 'GET' && p === '/api/alerts') return send(res, 200, store.listAlerts());
@@ -72,9 +74,9 @@ if (require.main === module) {
   const service = createService({ store, fetchCandles: provider.fetchCandles });
   if (tgToken && tgChat && !store.getSetting('tg_baseline')) { store.markAllSent(); store.setSetting('tg_baseline', '1'); } // never send old alerts when Telegram is first enabled
   const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || 'new_signal,outcome,api_error').split(',').map(x => x.trim()) });
-  const runner = require('./experiments').createRunner({ store, service, dailyLimit: Number(env.EXPERIMENT_DAILY_LIMIT || 10) }); runner.recover(); // tests interrupted by a restart go back in the queue
+  const runner = require('./experiments').createRunner({ store, service, dailyLimit: Number(env.EXPERIMENT_DAILY_LIMIT || 200) }); require('./experiments').register(store); runner.recover(); // tests interrupted by a restart go back in the queue
   const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, deliver: async () => { await service.trackAll().catch(() => {}); await service.auditTrack().catch(() => {}); return deliver(); } });
-  let busy = false; const run = async () => { if (busy) return; busy = true; try { await sch.tick(); await runner.runNext(); } catch { console.error('Background check failed'); } finally { busy = false; } };
+  let busy = false; const run = async () => { if (busy) return; busy = true; try { await sch.tick(); if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); await runner.runBatch(5); } catch { console.error('Background check failed'); } finally { busy = false; } };
   if (config.hasKey) { setTimeout(run, 5000); setInterval(run, 60000); }
   http.createServer(createApp({ service, store, config, runner })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
 }
