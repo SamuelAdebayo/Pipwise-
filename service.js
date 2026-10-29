@@ -17,7 +17,7 @@ function cleanParams(i = {}) {
   p.version = version(p); return p;
 }
 
-function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, provider = 'twelvedata' }) {
+function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, maxApprovals = 5, provider = 'twelvedata' }) {
   const cache = new Map(), lastTracked = {}, att = {}, calls = [];
   const ttlFor = tf => (ttlMs ? ({ '15min': 120000, '1h': 300000, '4h': 600000, '1day': 3600000 }[tf] || ttlMs) : 0); // slower timeframes need fewer refreshes
   const params = () => cleanParams(JSON.parse(store.getSetting('params') || '{}'));
@@ -236,8 +236,52 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       strategy: `${x.strategy_id}/${x.version}`, spread, slippagePips: slipPips, slippage: Number(slippage.toPrecision(6)), assumptions: LAB_ASSUMPTIONS + ' Every library strategy uses the same 1.5 x ATR stop and 2R target.',
       result: { all: pack(res.all), development: pack(res.development), outOfSample: pack(res.outOfSample) }, segments: S.segments(res.trades, closed) };
   }
+  // ---- Approved strategies: only combinations YOU approved create live signals ----
+  const lastSignalCheck = {}, sigAtt = {};
+  function approveSetup(o = {}) {
+    const S = require('./strategies'), def = S.find(o.strategy_id), ver = def && def.versions.find(x => x.label === o.version);
+    if (!def || def.id === 'ema-rsi-trend' || !ver) throw new Error('Unknown library strategy');
+    if (!INSTRUMENTS.includes(o.symbol) || !E.TF_MIN[o.tf]) throw new Error('Unsupported pair or timeframe');
+    if (!store.passedExperiment(def.id, ver.label, o.symbol, o.tf)) throw new Error('This combination has not passed the research tests, so it cannot be approved');
+    const max = Number(maxApprovals); if (store.listApprovals().filter(a => a.status === 'active').length >= max) throw new Error(`You can have at most ${max} approved combinations sending signals. Stop one first.`);
+    const id = store.approve({ strategy_id: def.id, strategy_version: ver.label, symbol: o.symbol, tf: o.tf }, now());
+    if (id) return { id };
+    const ex = store.listApprovals().find(a => a.strategy_id === def.id && a.strategy_version === ver.label && a.symbol === o.symbol && a.tf === o.tf);
+    if (ex.status === 'active') throw new Error('Already approved'); store.setApproval(ex.id, 'active'); return { id: ex.id, resumed: true };
+  }
+  function setApproval(id, status) {
+    const a = store.listApprovals().find(x => x.id === Number(id)); if (!a) throw new Error('Not found');
+    if (status === 'active' && a.status !== 'active' && store.listApprovals().filter(x => x.status === 'active').length >= Number(maxApprovals)) throw new Error(`You can have at most ${maxApprovals} approved combinations sending signals. Stop one first.`);
+    store.setApproval(a.id, status); return { id: a.id, status };
+  }
+  // Once per closed candle for each approved pair and timeframe: ask each approved strategy for a signal on the newest CLOSED candle.
+  async function scanApproved() {
+    const S = require('./strategies'), setups = store.listApprovals().filter(a => a.status === 'active'); let checked = 0, recorded = 0;
+    for (const key of [...new Set(setups.map(a => `${a.symbol}|${a.tf}`))]) {
+      const [symbol, tf] = key.split('|'), ms = E.TF_MIN[tf] * 60000, expected = Math.floor((now() - 15000) / ms) * ms - ms;
+      if (lastSignalCheck[key] >= expected) continue; const at = sigAtt[key]; if (at && at.expected === expected && at.n >= 5) continue;
+      sigAtt[key] = { expected, n: (at && at.expected === expected ? at.n : 0) + 1 };
+      let d; try { d = await load(symbol, tf, 400); } catch { continue; } // a data failure never becomes a signal
+      const clean = E.sanitize(d.candles), cc = clean.candles, lastGood = cc.length ? cc[cc.length - 1].t : -1;
+      if (!cc.length || clean.excluded.some(x => x.t > lastGood)) continue;
+      const closed = E.closedOnly(cc, tf, now()); if (!closed.length || E.isStale(closed, tf, now())) continue;
+      const i = closed.length - 1, last = closed[i]; if (last.t < expected) continue; // provider is behind: try again shortly
+      lastSignalCheck[key] = expected; checked++;
+      const x = S.prep(closed), atr = x.ind.atr[i], raw = cc[cc.length - 1], livePx = raw.t + ms > now() ? raw.c : last.c;
+      for (const a of setups.filter(s => s.symbol === symbol && s.tf === tf)) {
+        const def = S.find(a.strategy_id), ver = def && def.versions.find(q => q.label === a.strategy_version); if (!ver || atr == null) continue;
+        const dir = def.signal(x, i, ver.params); if (!dir) continue; const lv = E.levels(dir, last.c, atr, S.RISK); if (!lv) continue;
+        const label = `${def.name} (${ver.label})`; if (store.openSignals(symbol, tf).some(s => s.dir === dir && s.strategy === label)) continue;
+        const id = store.addSignal({ symbol, tf, dir, strategy: label, params: { strategy_id: def.id, version: ver.label, params: ver.params, approved: a.id }, candle_t: last.t, provider: d.source, ...lv, indicators: { atr }, created_at: now() });
+        if (id) { recorded++; const ec = E.entryCheck(dir, lv, livePx, { barsOld: 0 });
+          store.addAlert(`sig:${id}`, 'new_signal', `${symbol} ${tf}: new ${dir} signal\nStrategy: ${def.name} (${ver.label}), approved by you\nEntry ${fmt(symbol, lv.entry)} · Stop ${fmt(symbol, lv.stop)} · Target ${fmt(symbol, lv.target)}\nReward:risk ${lv.rr}:1 · Entry check: ${ec.state}\nTested on past data only, not a prediction. Check the app before acting.`, now()); }
+      }
+      track(symbol, tf, closed);
+    }
+    return { checked, recorded };
+  }
   const callsInLastMinute = () => { const t = now(); while (calls.length && t - calls[0] > 60000) calls.shift(); return calls.length; };
   const resetTracking = () => { for (const k of Object.keys(lastTracked)) delete lastTracked[k]; for (const k of Object.keys(att)) delete att[k]; }; // forces the next check to look at every open trade again
-  return { strategyRun, typicalSpread: s => TYPICAL_SPREAD[s] ?? 0, experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
+  return { approveSetup, setApproval, scanApproved, strategyRun, typicalSpread: s => TYPICAL_SPREAD[s] ?? 0, experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };

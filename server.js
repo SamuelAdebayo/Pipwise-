@@ -30,6 +30,9 @@ function createApp({ service, store, config, runner }) {
       if (req.method === 'GET' && p === '/api/experiments') return send(res, 200, store.listExperiments(Math.min(Number(u.searchParams.get('limit')) || 100, 200)).map(e => ({ ...e, params: pj(e.params), settings: pj(e.settings), result: pj(e.result) })));
       if (req.method === 'POST' && p === '/api/experiments') { if (!runner) throw new Error('The research runner is not available'); return send(res, 200, runner.enqueue(await body(req))); }
       if (req.method === 'POST' && p === '/api/experiments/requeue') return send(res, 200, { requeued: store.requeueExperiment(Number((await body(req)).id), Date.now()) });
+      if (req.method === 'GET' && p === '/api/approvals') return send(res, 200, store.listApprovals().map(a => ({ ...a, name: (require('./strategies').find(a.strategy_id) || {}).name || a.strategy_id })));
+      if (req.method === 'POST' && p === '/api/approvals') { const b = await body(req); return send(res, 200, service.approveSetup({ strategy_id: b.strategy_id, version: b.version, symbol: b.symbol, tf: b.tf })); }
+      if (req.method === 'POST' && (p === '/api/approvals/stop' || p === '/api/approvals/resume')) return send(res, 200, service.setApproval((await body(req)).id, p.endsWith('stop') ? 'stopped' : 'active'));
       if (req.method === 'GET' && p === '/api/alerts') return send(res, 200, store.listAlerts());
       if (req.method === 'POST' && p === '/api/alerts/read') return send(res, 200, { updated: store.markAlertsRead() });
       if (req.method === 'GET' && p === '/api/performance') { const n = k => (u.searchParams.get(k) ? Number(u.searchParams.get(k)) : undefined); return send(res, 200, service.performance({ from: n('from'), to: n('to') })); }
@@ -71,12 +74,12 @@ if (require.main === module) {
     storage: { path: dbPath, isDefault: !env.DB_PATH }, telegram: { token: tgRaw, chat: !!tgChat, problems: tgCheck.problems, discover: () => (tgToken ? N.discoverChatId(tgToken) : tgFail()), test: () => (tgToken ? N.send({ token: tgToken, chatId: tgChat }, 'Pipwise test message: alerts are working.') : tgFail()) } };
   const host = env.HOST || '127.0.0.1', port = Number(env.PORT || 3000);
   if (host !== '127.0.0.1' && !config.password) { console.error('Refusing to listen on a public address without PIPWISE_PASSWORD.'); process.exit(1); }
-  const service = createService({ store, fetchCandles: provider.fetchCandles });
+  const service = createService({ store, fetchCandles: provider.fetchCandles, maxApprovals: Number(env.MAX_APPROVALS || 5) });
   if (tgToken && tgChat && !store.getSetting('tg_baseline')) { store.markAllSent(); store.setSetting('tg_baseline', '1'); } // never send old alerts when Telegram is first enabled
   const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || 'new_signal,outcome,api_error').split(',').map(x => x.trim()) });
   const runner = require('./experiments').createRunner({ store, service, dailyLimit: Number(env.EXPERIMENT_DAILY_LIMIT || 200) }); require('./experiments').register(store); runner.recover(); // tests interrupted by a restart go back in the queue
   const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, deliver: async () => { await service.trackAll().catch(() => {}); await service.auditTrack().catch(() => {}); return deliver(); } });
-  let busy = false; const run = async () => { if (busy) return; busy = true; try { await sch.tick(); if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); await runner.runBatch(5); } catch { console.error('Background check failed'); } finally { busy = false; } };
+  let busy = false; const run = async () => { if (busy) return; busy = true; try { await sch.tick(); await service.scanApproved(); if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); await runner.runBatch(5); } catch { console.error('Background check failed'); } finally { busy = false; } };
   if (config.hasKey) { setTimeout(run, 5000); setInterval(run, 60000); }
   http.createServer(createApp({ service, store, config, runner })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
 }

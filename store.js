@@ -24,7 +24,9 @@ CREATE TABLE experiments(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind I
  priority INTEGER NOT NULL DEFAULT 5, retry_count INTEGER NOT NULL DEFAULT 0, needs_validation INTEGER NOT NULL DEFAULT 1, result TEXT, error TEXT, rejection_reason TEXT,
  dedupe_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER);
 CREATE INDEX idx_exp_status ON experiments(status,priority);`,
-`ALTER TABLE experiments ADD COLUMN not_before INTEGER;`];
+`ALTER TABLE experiments ADD COLUMN not_before INTEGER;`,
+`CREATE TABLE approved_setups(id INTEGER PRIMARY KEY, strategy_id TEXT NOT NULL, strategy_version TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'active' CHECK(status IN('active','stopped')), approved_at INTEGER NOT NULL, note TEXT, UNIQUE(strategy_id,strategy_version,symbol,tf));`];
 // The strategy Pipwise already uses, written down as data so new strategies can be compared with it. The live engine does not read this.
 const BASELINE_RULES = { entry: { BUY: ['EMA50 > EMA200', 'EMA20 > EMA50', 'RSI14 inside the BUY range', 'close > EMA20'], SELL: ['EMA50 < EMA200', 'EMA20 < EMA50', 'RSI14 inside the SELL range', 'close < EMA20'] },
   stop: 'atrStop x ATR14 from the entry', target: 'rr x the stop distance', defaults: { rsiBull: [50, 70], rsiBear: [30, 50], atrStop: 1.5, rr: 2 }, timeframes: ['15min', '1h', '4h'] };
@@ -39,6 +41,7 @@ const TABLES = {
   strategies: ['id', 'name', 'origin', 'description', 'created_at'],
   strategy_versions: ['id', 'strategy_id', 'version', 'rules', 'status', 'source_url', 'created_at'],
   experiments: ['id', 'kind', 'objective', 'hypothesis', 'origin', 'strategy_id', 'strategy_version', 'symbol', 'tf', 'params', 'data_range', 'settings', 'status', 'priority', 'retry_count', 'needs_validation', 'result', 'error', 'rejection_reason', 'dedupe_key', 'created_at', 'updated_at', 'started_at', 'finished_at', 'not_before'],
+  approved_setups: ['id', 'strategy_id', 'strategy_version', 'symbol', 'tf', 'status', 'approved_at', 'note'],
 };
 function open(path = ':memory:') {
   const db = new DatabaseSync(path);
@@ -52,7 +55,7 @@ function open(path = ':memory:') {
     exportAll: () => ({ app: 'pipwise', format: 1, exportedAt: Date.now(), tables: Object.fromEntries(Object.entries(TABLES).map(([t, cols]) => [t, db.prepare(`SELECT ${cols.join(',')} FROM ${t}`).all()])) }),
     importAll(data) { // adds missing records only: never overwrites or deletes, and is all-or-nothing
       if (!data || data.app !== 'pipwise' || data.format !== 1 || typeof data.tables !== 'object' || !data.tables) throw new Error('This is not a Pipwise backup file');
-      const out = { added: {}, found: {}, updated: {} }, SKIP_ID = ['signals', 'audit_signals', 'alerts', 'backtests', 'strategy_versions', 'experiments'];
+      const out = { added: {}, found: {}, updated: {} }, SKIP_ID = ['signals', 'audit_signals', 'alerts', 'backtests', 'strategy_versions', 'experiments', 'approved_setups'];
       // Row ids are NOT copied: the app may already have recorded new rows using the same ids, so records are matched on what they are instead.
       const DUPE = { audit_signals: ['source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t'], backtests: ['created_at', 'config'] };
       const val = (r, c, t) => { const x = r[c]; if (x === undefined) return null; if (x === null || typeof x === 'number' || typeof x === 'string') return x; throw new Error(`Bad value in ${t}.${c}`); };
@@ -128,6 +131,13 @@ function open(path = ':memory:') {
     recoverInterrupted: (now, maxRetries) => tx(() => { let n = 0; for (const r of q(`SELECT id,retry_count FROM experiments WHERE status='running'`).all()) { const c = r.retry_count + 1; n += q(`UPDATE experiments SET status=?, retry_count=?, error='Interrupted by a restart', updated_at=? WHERE id=?`).run(c >= maxRetries ? 'blocked' : 'queued', c, now, r.id).changes; } return n; }),
     requeueExperiment: (id, now) => q(`UPDATE experiments SET status='queued', retry_count=0, error=NULL, not_before=NULL, updated_at=? WHERE id=? AND status='blocked'`).run(now, id).changes,
     experimentCounts: () => Object.fromEntries(q(`SELECT status, COUNT(*) AS n FROM experiments GROUP BY status`).all().map(r => [r.status, r.n])),
+    listApprovals: () => q(`SELECT * FROM approved_setups ORDER BY id`).all(),
+    approve(a, now = Date.now()) { // returns the id, or null if this exact combination is already approved
+      const r = q(`INSERT INTO approved_setups(strategy_id,strategy_version,symbol,tf,approved_at,note) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING`).run(a.strategy_id, a.strategy_version, a.symbol, a.tf, now, a.note ?? null);
+      return r.changes ? Number(r.lastInsertRowid) : null;
+    },
+    setApproval: (id, status) => q(`UPDATE approved_setups SET status=? WHERE id=?`).run(status, id).changes,
+    passedExperiment: (id, v, symbol, tf) => !!q(`SELECT 1 FROM experiments WHERE strategy_id=? AND strategy_version=? AND symbol=? AND tf=? AND status='awaiting_validation' AND params LIKE '%"mode":"library"%' LIMIT 1`).get(id, v, symbol, tf),
     finishedSince: t => q(`SELECT COUNT(*) AS n FROM experiments WHERE finished_at>=?`).get(t).n,
     hasStrategyVersion: (id, v) => !!q(`SELECT 1 FROM strategy_versions WHERE strategy_id=? AND version=?`).get(id, v),
     listExperiments: (limit = 100) => q(`SELECT * FROM experiments ORDER BY id DESC LIMIT ?`).all(Math.min(limit, 500)),
