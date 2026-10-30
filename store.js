@@ -137,7 +137,7 @@ function open(path = ':memory:') {
       return r.changes ? Number(r.lastInsertRowid) : null;
     },
     setApproval: (id, status) => q(`UPDATE approved_setups SET status=? WHERE id=?`).run(status, id).changes,
-    passedExperiment: (id, v, symbol, tf) => !!q(`SELECT 1 FROM experiments WHERE strategy_id=? AND strategy_version=? AND symbol=? AND tf=? AND status='awaiting_validation' AND params LIKE '%"mode":"library"%' LIMIT 1`).get(id, v, symbol, tf),
+    passedExperiment: (id, v, symbol, tf) => !!q(`SELECT 1 FROM experiments WHERE strategy_id=? AND strategy_version=? AND symbol=? AND tf=? AND status='awaiting_validation' AND params LIKE '%"mode":"library"%' AND params LIKE '%"crit":2%' LIMIT 1`).get(id, v, symbol, tf),
     finishedSince: t => q(`SELECT COUNT(*) AS n FROM experiments WHERE finished_at>=?`).get(t).n,
     hasStrategyVersion: (id, v) => !!q(`SELECT 1 FROM strategy_versions WHERE strategy_id=? AND version=?`).get(id, v),
     listExperiments: (limit = 100) => q(`SELECT * FROM experiments ORDER BY id DESC LIMIT ?`).all(Math.min(limit, 500)),

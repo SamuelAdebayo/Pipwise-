@@ -36,10 +36,11 @@ function backtestStrategy(c, tf, def, params, o = {}) {
   const signalFn = i => { const dir = def.signal(x, i, params), a = x.ind.atr[i]; if (!dir || a == null) return { signal: 'WAIT' }; const levels = E.levels(dir, c[i].c, a, RISK); return levels ? { signal: dir, levels, t: c[i].t } : { signal: 'WAIT' }; };
   return E.backtest(c, tf, E.DEFAULTS, { ...o, signalFn });
 }
+// Trades at or after the end time never count, so the final segment cannot change the result.
 // Average result (after costs) in K equal slices of time: shows whether a result is steady or came from one lucky stretch.
-function segments(trades, c, K = 4) {
-  const t0 = c[200].t, t1 = c[c.length - 1].t + 1, w = (t1 - t0) / K, out = Array.from({ length: K }, () => ({ n: 0, sum: 0 }));
-  for (const tr of trades) { if (tr.netR == null) continue; const k = Math.min(K - 1, Math.max(0, Math.floor((tr.t - t0) / w))); out[k].n++; out[k].sum += tr.netR; }
+function segments(trades, c, K = 4, end = null) {
+  const t0 = c[200].t, t1 = end ?? c[c.length - 1].t + 1, w = (t1 - t0) / K, out = Array.from({ length: K }, () => ({ n: 0, sum: 0 }));
+  for (const tr of trades) { if (tr.netR == null || tr.t >= t1) continue; const k = Math.min(K - 1, Math.max(0, Math.floor((tr.t - t0) / w))); out[k].n++; out[k].sum += tr.netR; }
   return out.map(s => ({ trades: s.n, avgR: s.n ? s.sum / s.n : null }));
 }
 module.exports = { STRATEGIES, find, prep, backtestStrategy, segments, RISK };

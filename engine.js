@@ -112,9 +112,10 @@ function backtest(c, tf, p = DEFAULTS, o = {}) { // o.accept(i, dir) can veto a 
     trades.push({ t: s.t, dir: s.signal, status: r.status, r: r.r, netR: r.r == null ? null : r.r - cost, levels: s.levels });
     busy = i + r.bars;
   }
-  const cut = c[Math.floor(c.length * devFraction)].t;
+  const cut = c[Math.floor(c.length * devFraction)].t, cutValidation = c[Math.floor(c.length * 0.5)].t, cutFinal = c[Math.floor(c.length * 0.75)].t;
   return { params: p, options: { spread, slippage, maxBars, devFraction }, candles: c.length, gaps: issues.length, trades,
-    all: summarize(trades), development: summarize(trades.filter(t => t.t < cut)), outOfSample: summarize(trades.filter(t => t.t >= cut)) };
+    all: summarize(trades), development: summarize(trades.filter(t => t.t < cut)), outOfSample: summarize(trades.filter(t => t.t >= cut)),
+    split3: { cutValidation, cutFinal, selection: summarize(trades.filter(t => t.t < cutFinal)), development: summarize(trades.filter(t => t.t < cutValidation)), validation: summarize(trades.filter(t => t.t >= cutValidation && t.t < cutFinal)), final: summarize(trades.filter(t => t.t >= cutFinal)) } }; // development 50% / validation 25% decide; the final 25% is only reported
 }
 // Is a signal still worth entering at the current price? Transparent heuristic, not a prediction.
 function entryCheck(dir, L, price, o = {}) {

@@ -234,13 +234,14 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     const res = S.backtestStrategy(closed, x.tf, def, ver.params, { spread, slippage, maxBars: MAX_BARS });
     return { dataset: { provider: d.source, symbol: x.symbol, tf: x.tf, candles: closed.length, first: closed[0].t, last: closed[closed.length - 1].t, excludedCandles: san.excluded.length, fromCache: !!d.fromCache },
       strategy: `${x.strategy_id}/${x.version}`, spread, slippagePips: slipPips, slippage: Number(slippage.toPrecision(6)), assumptions: LAB_ASSUMPTIONS + ' Every library strategy uses the same 1.5 x ATR stop and 2R target.',
-      result: { all: pack(res.all), development: pack(res.development), outOfSample: pack(res.outOfSample) }, segments: S.segments(res.trades, closed) };
+      result: { all: pack(res.all), development: pack(res.development), outOfSample: pack(res.outOfSample) }, segments: S.segments(res.trades, closed), selectionSegments: S.segments(res.trades, closed, 4, res.split3.cutFinal),
+      split3: { cutValidation: res.split3.cutValidation, cutFinal: res.split3.cutFinal, frozenAt: closed[closed.length - 1].t, selection: pack(res.split3.selection), development: pack(res.split3.development), validation: pack(res.split3.validation), final: pack(res.split3.final) } };
   }
   // ---- Approved strategies: only combinations YOU approved create live signals ----
   const lastSignalCheck = {}, sigAtt = {};
   function approveSetup(o = {}) {
     const S = require('./strategies'), def = S.find(o.strategy_id), ver = def && def.versions.find(x => x.label === o.version);
-    if (!def || def.id === 'ema-rsi-trend' || !ver) throw new Error('Unknown library strategy');
+    if (!def || !ver) throw new Error('Unknown library strategy');
     if (!INSTRUMENTS.includes(o.symbol) || !E.TF_MIN[o.tf]) throw new Error('Unsupported pair or timeframe');
     if (!store.passedExperiment(def.id, ver.label, o.symbol, o.tf)) throw new Error('This combination has not passed the research tests, so it cannot be approved');
     const max = Number(maxApprovals); if (store.listApprovals().filter(a => a.status === 'active').length >= max) throw new Error(`You can have at most ${max} approved combinations sending signals. Stop one first.`);
@@ -271,7 +272,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       for (const a of setups.filter(s => s.symbol === symbol && s.tf === tf)) {
         const def = S.find(a.strategy_id), ver = def && def.versions.find(q => q.label === a.strategy_version); if (!ver || atr == null) continue;
         const dir = def.signal(x, i, ver.params); if (!dir) continue; const lv = E.levels(dir, last.c, atr, S.RISK); if (!lv) continue;
-        const label = `${def.name} (${ver.label})`; if (store.openSignals(symbol, tf).some(s => s.dir === dir && s.strategy === label)) continue;
+        const label = `${def.name} (${ver.label})`; if (store.openSignals(symbol, tf).some(s => s.dir === dir && (s.strategy === label || (def.id === 'ema-rsi-trend' && /^v1\|/.test(s.strategy))))) continue; // the original strategy's own signals count as the same idea: no double trade
         const id = store.addSignal({ symbol, tf, dir, strategy: label, params: { strategy_id: def.id, version: ver.label, params: ver.params, approved: a.id }, candle_t: last.t, provider: d.source, ...lv, indicators: { atr }, created_at: now() });
         if (id) { recorded++; const ec = E.entryCheck(dir, lv, livePx, { barsOld: 0 });
           store.addAlert(`sig:${id}`, 'new_signal', `${symbol} ${tf}: new ${dir} signal\nStrategy: ${def.name} (${ver.label}), approved by you\nEntry ${fmt(symbol, lv.entry)} · Stop ${fmt(symbol, lv.stop)} · Target ${fmt(symbol, lv.target)}\nReward:risk ${lv.rr}:1 · Entry check: ${ec.state}\nTested on past data only, not a prediction. Check the app before acting.`, now()); }

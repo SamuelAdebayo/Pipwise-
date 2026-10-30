@@ -37,16 +37,32 @@ function judgeStrategy(res, segs) {
   if (segs.filter(s => s.avgR > 0).length < c.minPositiveSegments) fails.push('not_stable_across_periods');
   return fails.length ? { decision: 'rejected', reasons: fails, criteria: c } : { decision: 'awaiting_validation', reasons: ['passes_single_pair_tests', 'needs_other_pairs_and_paper_trading'], criteria: c };
 }
+// Version 2 rules: decided ONLY on the development (first 50%) and validation (next 25%) periods. The final 25% is recorded but never used to decide.
+const CRITERIA_V2 = { version: 2, minSelectionTrades: 80, minValidationTrades: 25, minAvgR: 0.05, minProfitFactor: 1.1, minPositiveSlices: 3, slices: 4, split: 'development 50% / validation 25% / final 25% (final never used to decide)' };
+function judgeStrategyV2(r, segs) {
+  const c = CRITERIA_V2, d = r.split3.development.net, v = r.split3.validation.net, sel = r.split3.selection.net, fin = r.split3.final.net, fails = [];
+  if (sel.resolved < c.minSelectionTrades) fails.push('too_few_trades');
+  if (v.resolved < c.minValidationTrades) fails.push('too_few_validation_trades');
+  if (!(sel.avgR >= c.minAvgR)) fails.push('average_not_above_costs');
+  if (!((sel.profitFactor ?? Infinity) >= c.minProfitFactor)) fails.push('profit_factor_low');
+  if (!(d.avgR > 0)) fails.push('development_not_positive');
+  if (!(v.avgR > 0)) fails.push('validation_not_positive');
+  if (segs.filter(s => s.avgR > 0).length < c.minPositiveSlices) fails.push('not_stable_across_periods');
+  const final = { resolved: fin.resolved, avgR: fin.avgR, usedToDecide: false };
+  return fails.length ? { decision: 'rejected', reasons: fails, criteria: c, final } : { decision: 'awaiting_validation', reasons: ['passes_single_pair_tests', 'needs_other_pairs_and_paper_trading'], criteria: c, final };
+}
 // Strategy versions that passed on at least one pair. Passing on several different pairs is the main protection against luck.
 function candidates(store) {
-  const g = {}; let tested = 0;
+  const g = {}; let tested = 0, legacyPassed = 0; const finalCheck = { positive: 0, total: 0 };
   for (const e of store.listExperiments(500)) {
-    let p; try { p = JSON.parse(e.params); } catch { continue; } if (!p || p.mode !== 'library' || !['awaiting_validation', 'rejected'].includes(e.status)) continue; tested++;
+    let p; try { p = JSON.parse(e.params); } catch { continue; } if (!p || p.mode !== 'library' || !['awaiting_validation', 'rejected'].includes(e.status)) continue;
+    if (p.crit !== 2) { if (e.status === 'awaiting_validation') legacyPassed++; continue; } // judged under the older, looser rules: kept on record, no longer counted
+    tested++;
     const k = `${e.strategy_id}|${e.strategy_version}|${e.tf}`, row = g[k] || (g[k] = { strategy_id: e.strategy_id, version: e.strategy_version, tf: e.tf, tested: 0, passed: [] }); row.tested++;
-    if (e.status === 'awaiting_validation') { let r = null; try { r = JSON.parse(e.result); } catch { /* keep going */ } row.passed.push({ symbol: e.symbol, trades: r && r.result.all.net.resolved, avgR: r && r.result.all.net.avgR, oosAvgR: r && r.result.outOfSample.net.avgR }); }
+    if (e.status === 'awaiting_validation') { let r = null; try { r = JSON.parse(e.result); } catch { /* keep going */ } const f = r && r.split3 && r.split3.final.net; row.passed.push({ symbol: e.symbol, trades: r && r.result.all.net.resolved, avgR: r && r.result.all.net.avgR, oosAvgR: r && r.result.outOfSample.net.avgR, finalAvgR: f ? f.avgR : null, finalTrades: f ? f.resolved : null }); if (f && f.resolved > 0) { finalCheck.total++; if (f.avgR > 0) finalCheck.positive++; } }
   }
   const list = Object.values(g).filter(r => r.passed.length).map(r => ({ ...r, name: (S.find(r.strategy_id) || {}).name || r.strategy_id, promising: r.passed.length >= 2 })).sort((a, b) => b.passed.length - a.passed.length || (b.passed[0].oosAvgR ?? 0) - (a.passed[0].oosAvgR ?? 0));
-  return { tested, candidates: list };
+  return { tested, legacyPassed, finalCheck, candidates: list };
 }
 function register(store) { for (const d of S.STRATEGIES) for (const v of d.versions) store.registerStrategy(d, v); } // idempotent
 
@@ -75,15 +91,15 @@ function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLim
       for (const symbol of symbols) for (const tf of tfs) for (const def of S.STRATEGIES) for (const ver of def.versions) {
         const spread = service.typicalSpread(symbol), slip = 0.5;
         const id = store.addExperiment({ kind: 'discovery', objective: `${def.name} (${ver.label}) on ${symbol} ${tf}`, hypothesis: def.description, origin: 'library', strategy_id: def.id, strategy_version: ver.label, symbol, tf,
-          params: { mode: 'library', round, spread, slippagePips: slip, strategy: ver.params }, settings: { maxBars: 48, split: '70/30', segments: 4, costs: 'typical spread + 0.5 pip slippage, charged as cost/risk in R' }, priority: 6,
-          dedupe_key: ['sweep', round, def.id, ver.label, symbol, tf, spread, slip].join('|'), status: 'queued', now: now() });
+          params: { mode: 'library', crit: 2, round, spread, slippagePips: slip, strategy: ver.params }, settings: { maxBars: 48, split: '70/30', segments: 4, costs: 'typical spread + 0.5 pip slippage, charged as cost/risk in R' }, priority: 6,
+          dedupe_key: ['sweep', round, 'v2', def.id, ver.label, symbol, tf, spread, slip].join('|'), status: 'queued', now: now() });
         id ? queued++ : existing++;
       }
-      store.setSetting('last_sweep', round); return { queued, existing, round };
+      store.setSetting('last_sweep', `${round}|v2`); return { queued, existing, round };
     },
     autoPlan() { // once a month, when nothing is waiting, plan a fresh sweep on newer data
       const round = new Date(now()).toISOString().slice(0, 7), c = store.experimentCounts ? store.experimentCounts() : {};
-      if (store.getSetting('last_sweep') === round || (c.queued || 0) + (c.running || 0) > 0) return null; return this.planSweep();
+      if (store.getSetting('last_sweep') === `${round}|v2` || (c.queued || 0) + (c.running || 0) > 0) return null; return this.planSweep();
     },
     async runBatch(max = 5) { const out = []; for (let i = 0; i < max; i++) { const r = await this.runNext(); if (!r || r.skipped) break; out.push(r); if (r.failed) break; } return out; },
     async runNext() {
@@ -94,7 +110,7 @@ function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLim
       try {
         const p = JSON.parse(exp.params);
         if (p.mode === 'library') {
-          const lr = await service.strategyRun({ symbol: exp.symbol, tf: exp.tf, strategy_id: exp.strategy_id, version: exp.strategy_version, spread: p.spread, slippagePips: p.slippagePips }), lj = judgeStrategy(lr.result, lr.segments);
+          const lr = await service.strategyRun({ symbol: exp.symbol, tf: exp.tf, strategy_id: exp.strategy_id, version: exp.strategy_version, spread: p.spread, slippagePips: p.slippagePips }), lj = judgeStrategyV2(lr, lr.selectionSegments);
           store.finishExperiment(exp.id, { status: lj.decision, result: { ...lr, judgement: lj }, rejection_reason: lj.decision === 'rejected' ? lj.reasons.join(',') : null, now: now() });
           return { ran: exp.id, status: lj.decision };
         }
@@ -109,4 +125,4 @@ function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLim
     },
   };
 }
-module.exports = { createRunner, judge, judgeStrategy, candidates, register, cleanFilters, MIN_TRADES, STRATEGY_CRITERIA };
+module.exports = { createRunner, judge, judgeStrategy, judgeStrategyV2, CRITERIA_V2, candidates, register, cleanFilters, MIN_TRADES, STRATEGY_CRITERIA };
