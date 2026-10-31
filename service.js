@@ -228,7 +228,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
   // Runs one library strategy version on real candles: the shared backtester, the shared costs, plus a check of how steady the result is over time.
   const TYPICAL_SPREAD = { 'EUR/USD': 0.00008, 'GBP/USD': 0.0001, 'USD/JPY': 0.008, 'GBP/JPY': 0.02, 'XAU/USD': 0.3 }; // rough typical values, labelled as assumptions in every result
   async function strategyRun(x) {
-    const S = require('./strategies'), def = S.find(x.strategy_id), ver = def && def.versions.find(v => v.label === x.version); if (!ver) throw new Error('Unknown strategy version');
+    const S = require('./strategies'), def = S.resolve(store, x.strategy_id), ver = def && def.versions.find(v => v.label === x.version); if (!ver) throw new Error('Unknown strategy version');
     const slipPips = Number(x.slippagePips ?? 0.5), slippage = slipPips * pipSize(x.symbol), spread = Number(x.spread || 0);
     const d = await load(x.symbol, x.tf, 5000), san = E.sanitize(d.candles), closed = E.closedOnly(san.candles, x.tf, now()); if (closed.length < 400) throw new Error('Not enough history (need 400+ closed candles)');
     const res = S.backtestStrategy(closed, x.tf, def, ver.params, { spread, slippage, maxBars: MAX_BARS });
@@ -240,7 +240,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
   // ---- Approved strategies: only combinations YOU approved create live signals ----
   const lastSignalCheck = {}, sigAtt = {};
   function approveSetup(o = {}) {
-    const S = require('./strategies'), def = S.find(o.strategy_id), ver = def && def.versions.find(x => x.label === o.version);
+    const S = require('./strategies'), def = S.resolve(store, o.strategy_id), ver = def && def.versions.find(x => x.label === o.version);
     if (!def || !ver) throw new Error('Unknown library strategy');
     if (!INSTRUMENTS.includes(o.symbol) || !E.TF_MIN[o.tf]) throw new Error('Unsupported pair or timeframe');
     if (!store.passedExperiment(def.id, ver.label, o.symbol, o.tf)) throw new Error('This combination has not passed the research tests, so it cannot be approved');
@@ -270,7 +270,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       lastSignalCheck[key] = expected; checked++;
       const x = S.prep(closed), atr = x.ind.atr[i], raw = cc[cc.length - 1], livePx = raw.t + ms > now() ? raw.c : last.c;
       for (const a of setups.filter(s => s.symbol === symbol && s.tf === tf)) {
-        const def = S.find(a.strategy_id), ver = def && def.versions.find(q => q.label === a.strategy_version); if (!ver || atr == null) continue;
+        const def = S.resolve(store, a.strategy_id), ver = def && def.versions.find(q => q.label === a.strategy_version); if (!ver || atr == null) continue;
         const dir = def.signal(x, i, ver.params); if (!dir) continue; const lv = E.levels(dir, last.c, atr, S.RISK); if (!lv) continue;
         const label = `${def.name} (${ver.label})`; if (store.openSignals(symbol, tf).some(s => s.dir === dir && (s.strategy === label || (def.id === 'ema-rsi-trend' && /^v1\|/.test(s.strategy))))) continue; // the original strategy's own signals count as the same idea: no double trade
         const id = store.addSignal({ symbol, tf, dir, strategy: label, params: { strategy_id: def.id, version: ver.label, params: ver.params, approved: a.id }, candle_t: last.t, provider: d.source, ...lv, indicators: { atr }, created_at: now() });

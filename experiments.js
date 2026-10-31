@@ -61,9 +61,11 @@ function candidates(store) {
     const k = `${e.strategy_id}|${e.strategy_version}|${e.tf}`, row = g[k] || (g[k] = { strategy_id: e.strategy_id, version: e.strategy_version, tf: e.tf, tested: 0, passed: [] }); row.tested++;
     if (e.status === 'awaiting_validation') { let r = null; try { r = JSON.parse(e.result); } catch { /* keep going */ } const f = r && r.split3 && r.split3.final.net; row.passed.push({ symbol: e.symbol, trades: r && r.result.all.net.resolved, avgR: r && r.result.all.net.avgR, oosAvgR: r && r.result.outOfSample.net.avgR, finalAvgR: f ? f.avgR : null, finalTrades: f ? f.resolved : null }); if (f && f.resolved > 0) { finalCheck.total++; if (f.avgR > 0) finalCheck.positive++; } }
   }
-  const list = Object.values(g).filter(r => r.passed.length).map(r => ({ ...r, name: (S.find(r.strategy_id) || {}).name || r.strategy_id, promising: r.passed.length >= 2 })).sort((a, b) => b.passed.length - a.passed.length || (b.passed[0].oosAvgR ?? 0) - (a.passed[0].oosAvgR ?? 0));
+  const list = Object.values(g).filter(r => r.passed.length).map(r => ({ ...r, name: (S.resolve(store, r.strategy_id) || {}).name || r.strategy_id, promising: isPromising(r.passed) })).sort((a, b) => b.passed.length - a.passed.length || (b.passed[0].oosAvgR ?? 0) - (a.passed[0].oosAvgR ?? 0));
   return { tested, legacyPassed, finalCheck, candidates: list };
 }
+// "Promising": passed on two or more pairs AND most of those pairs were also profitable on the final segment that never decided anything.
+function isPromising(passed) { const f = passed.filter(p => p.finalTrades >= 10); return passed.length >= 2 && f.length >= 2 && f.filter(p => p.finalAvgR > 0).length * 2 > f.length; }
 function register(store) { for (const d of S.STRATEGIES) for (const v of d.versions) store.registerStrategy(d, v); } // idempotent
 
 function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLimit = 10, backoffMs = 300000, callBudget = 3 }) {
@@ -88,7 +90,7 @@ function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLim
       const symbols = o.symbols || INSTRUMENTS, tfs = o.tfs || Object.keys(E.TF_MIN);
       if (!Array.isArray(symbols) || symbols.some(s => !INSTRUMENTS.includes(s)) || !Array.isArray(tfs) || tfs.some(t => !E.TF_MIN[t])) throw new Error('Unsupported pair or timeframe');
       const round = new Date(now()).toISOString().slice(0, 7); let queued = 0, existing = 0;
-      for (const symbol of symbols) for (const tf of tfs) for (const def of S.STRATEGIES) for (const ver of def.versions) {
+      for (const symbol of symbols) for (const tf of tfs) for (const def of S.STRATEGIES.concat(S.dataStrategies(store))) for (const ver of def.versions) {
         const spread = service.typicalSpread(symbol), slip = 0.5;
         const id = store.addExperiment({ kind: 'discovery', objective: `${def.name} (${ver.label}) on ${symbol} ${tf}`, hypothesis: def.description, origin: 'library', strategy_id: def.id, strategy_version: ver.label, symbol, tf,
           params: { mode: 'library', crit: 2, round, spread, slippagePips: slip, strategy: ver.params }, settings: { maxBars: 48, split: '70/30', segments: 4, costs: 'typical spread + 0.5 pip slippage, charged as cost/risk in R' }, priority: 6,

@@ -111,6 +111,14 @@ function open(path = ':memory:') {
       db.prepare(`INSERT OR IGNORE INTO strategies(id,name,origin,description,created_at) VALUES(?,?,?,?,?)`).run(def.id, def.name, 'library', def.description, now);
       db.prepare(`INSERT OR IGNORE INTO strategy_versions(strategy_id,version,rules,status,source_url,created_at) VALUES(?,?,?,?,?,?)`).run(def.id, ver.label, JSON.stringify({ params: ver.params, description: def.description, risk: '1.5 x ATR14 stop, 2R target, same for every strategy', note: 'The source explains the indicator only; no performance claim is relied on.' }), 'candidate', def.source || null, now);
     },
+    registerDataStrategy(d, origin = 'user', now = Date.now()) { // a strategy stored as data (rules JSON); returns false if the id already exists
+      return tx(() => {
+        if (q(`SELECT 1 FROM strategies WHERE id=?`).get(d.id)) return false;
+        q(`INSERT INTO strategies(id,name,origin,description,created_at) VALUES(?,?,?,?,?)`).run(d.id, d.name, origin, d.description || '', now);
+        for (const v of d.versions) q(`INSERT INTO strategy_versions(strategy_id,version,rules,status,source_url,created_at) VALUES(?,?,?,?,?,?)`).run(d.id, v.label, JSON.stringify({ spec: v.spec, description: d.description || '', risk: '1.5 x ATR14 stop, 2R target, same for every strategy' }), 'candidate', null, now);
+        return true;
+      });
+    },
     listStrategies: () => q(`SELECT * FROM strategies ORDER BY created_at`).all().map(st => ({ ...st, versions: q(`SELECT id,version,rules,status,source_url,created_at FROM strategy_versions WHERE strategy_id=? ORDER BY id`).all(st.id).map(v => ({ ...v, rules: JSON.parse(v.rules) })) })),
     addExperiment(e) { // records a research task; returns null if the same task (dedupe_key) already exists
       const t = e.now || Date.now(), j = x => (x ? JSON.stringify(x) : null), r = q(`INSERT INTO experiments(kind,objective,hypothesis,origin,strategy_id,strategy_version,symbol,tf,params,data_range,settings,status,priority,needs_validation,dedupe_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`)

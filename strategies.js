@@ -10,7 +10,7 @@ function bands(c, n = 20) { // Bollinger: average and standard deviation of the 
   for (let i = n - 1; i < c.length; i++) { let s = 0; for (let j = i - n + 1; j <= i; j++) s += c[j].c; const m = s / n; let v = 0; for (let j = i - n + 1; j <= i; j++) v += (c[j].c - m) ** 2; mid[i] = m; sd[i] = Math.sqrt(v / n); }
   return { mid, sd };
 }
-function prep(c) { let bb = null; return { c, ind: E.indicators(c), adx: E.adx(c, 14), get bb() { return bb || (bb = bands(c)); } }; }
+function prep(c) { let bb = null; return { c, ind: E.indicators(c), adx: E.adx(c, 14), cache: new Map(), get bb() { return bb || (bb = bands(c)); } }; }
 
 const STRATEGIES = [
   { id: 'ema-rsi-trend', name: 'EMA / RSI / ATR trend follower', source: null, description: 'The original Pipwise rules (for comparison).', versions: [{ label: 'v1', params: {} }],
@@ -29,6 +29,15 @@ const STRATEGIES = [
     signal: (x, i, p) => { const { e20, e50 } = x.ind, a = x.adx[i]; if (i < 1 || [e20[i], e50[i], e20[i - 1], e50[i - 1], a].some(v => v == null) || a < p.adx) return null; return e20[i - 1] <= e50[i - 1] && e20[i] > e50[i] ? 'BUY' : e20[i - 1] >= e50[i - 1] && e20[i] < e50[i] ? 'SELL' : null; } },
 ];
 const find = id => STRATEGIES.find(s => s.id === id);
+const R = require('./rules');
+// Finds a strategy by id: the built-in ones first, then ones stored as data in the registry (added by you, or generated later).
+function resolve(store, id) {
+  const code = find(id); if (code) return code;
+  const row = store.listStrategies().find(s => s.id === id); if (!row) return null;
+  const versions = row.versions.filter(v => v.rules && v.rules.spec).map(v => ({ label: v.version, params: { spec: v.rules.spec } })); if (!versions.length) return null;
+  return { id: row.id, name: row.name, description: row.description, source: null, origin: row.origin, versions, signal: (x, i, p) => R.signal(x, i, p.spec) };
+}
+const dataStrategies = store => store.listStrategies().filter(s => !find(s.id)).map(s => resolve(store, s.id)).filter(Boolean);
 
 // Runs one strategy version over candles with the shared backtester (same costs, one trade at a time, 70/30 split).
 function backtestStrategy(c, tf, def, params, o = {}) {
@@ -43,4 +52,4 @@ function segments(trades, c, K = 4, end = null) {
   for (const tr of trades) { if (tr.netR == null || tr.t >= t1) continue; const k = Math.min(K - 1, Math.max(0, Math.floor((tr.t - t0) / w))); out[k].n++; out[k].sum += tr.netR; }
   return out.map(s => ({ trades: s.n, avgR: s.n ? s.sum / s.n : null }));
 }
-module.exports = { STRATEGIES, find, prep, backtestStrategy, segments, RISK };
+module.exports = { STRATEGIES, find, resolve, dataStrategies, prep, backtestStrategy, segments, RISK };
