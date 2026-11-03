@@ -7,6 +7,7 @@ const LAB_ASSUMPTIONS = `Entry = signal candle close. Outcome from later complet
 const ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. No spread, slippage or gaps modelled.`;
 const fmt = (s, x) => Number(x).toFixed(s.includes('JPY') ? 3 : s.startsWith('XAU') ? 2 : 5);
 const OUTCOME_TEXT = { target: r => `WIN +${r}R (target hit)`, stop: r => `LOSS ${r}R (stop hit)`, ambiguous: () => 'UNCLEAR (stop and target in the same candle)', expired: () => `EXPIRED (no result after ${MAX_BARS} candles)` };
+const BASE_NAME = 'EMA / RSI / ATR trend follower', nameOf = s => (/^v1\|/.test(s.strategy || '') ? BASE_NAME : s.strategy);
 const version = p => `v1|bull${p.rsiBull.join('-')}|bear${p.rsiBear.join('-')}|atr${p.atrStop}|rr${p.rr}`;
 
 function cleanParams(i = {}) {
@@ -57,6 +58,20 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     return limited;
   }
 
+  // One result per strategy that may generate live signals here: the original strategy plus every active approval for this pair and timeframe. Results are never merged.
+  function strategyResults({ symbol, tf, closed, stale, last, livePx, sig, entryCheck }) {
+    const S = require('./strategies'), ms = E.TF_MIN[tf] * 60000, sd = sig.sides || { buy: [], sell: [] }, cn = l => l.map(r => ({ text: r.name, pass: r.pass }));
+    const open = (id, ver) => store.openSignals(symbol, tf).filter(s => (s.strategy_id === id || (id === 'ema-rsi-trend' && /^v1\|/.test(s.strategy))) && (id === 'ema-rsi-trend' || s.strategy_version === ver)).map(s => ({ id: s.id, dir: s.dir, entry: s.entry, stop: s.stop, target: s.target, signalT: s.candle_t + ms }));
+    const out = [{ strategy_id: 'ema-rsi-trend', strategy_version: 'v1', name: BASE_NAME, origin: 'built-in', result: sig.signal, fresh: !stale, levels: sig.levels, entryCheck, conditions: { buy: cn(sd.buy), sell: cn(sd.sell) }, open: open('ema-rsi-trend', 'v1') }];
+    const setups = store.listApprovals().filter(a => a.status === 'active' && a.symbol === symbol && a.tf === tf && a.strategy_id !== 'ema-rsi-trend'); if (!setups.length || !closed.length) return out;
+    const x = S.prep(closed), i = closed.length - 1, atr = x.ind.atr[i];
+    for (const a of setups) {
+      const def = S.resolve(store, a.strategy_id), ver = def && def.versions.find(v => v.label === a.strategy_version); if (!ver) continue;
+      const dir = !stale && atr != null ? def.signal(x, i, ver.params) : null, lv = dir ? E.levels(dir, last.c, atr, S.RISK) : null;
+      out.push({ strategy_id: def.id, strategy_version: ver.label, name: def.name, origin: def.origin || 'library', result: lv ? dir : 'WAIT', fresh: !stale, levels: lv, entryCheck: lv ? E.entryCheck(dir, lv, livePx, { barsOld: 0 }) : null, conditions: S.explain(def, x, i, ver.params), open: open(def.id, ver.label) });
+    }
+    return out;
+  }
   async function snapshot(symbol, tf, force = false) {
     const p = params(); let d;
     try { d = await load(symbol, tf, 400, force); }
@@ -74,13 +89,15 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     const live = raw && raw.t + ms > now() ? { price: raw.c, t: raw.t } : null, livePx = live ? live.price : last ? last.c : null; // live = price of the still-forming candle
     const entryCheck = sig.levels ? E.entryCheck(sig.signal, sig.levels, livePx, { barsOld: last ? Math.max(0, Math.floor((now() - (last.t + ms)) / ms)) : 0 }) : null;
     let recorded = null;
-    if (!stale && sig.levels && !store.openSignals(symbol, tf).some(s => s.dir === sig.signal)) {
-      recorded = store.addSignal({ symbol, tf, dir: sig.signal, strategy: p.version, params: p, candle_t: last.t, provider: d.source, ...sig.levels, indicators: { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] }, created_at: now() });
-      if (recorded) store.addAlert(`sig:${recorded}`, 'new_signal', `${symbol} ${tf}: new ${sig.signal} signal\nEntry ${fmt(symbol, sig.levels.entry)} · Stop ${fmt(symbol, sig.levels.stop)} · Target ${fmt(symbol, sig.levels.target)}\nReward:risk ${sig.levels.rr}:1 · Entry check: ${entryCheck ? entryCheck.state : 'n/a'}\nExperimental rules, not a prediction. Check the app before acting.`, now());
+    const mine = s => s.dir === sig.signal && (s.strategy_id === 'ema-rsi-trend' || /^v1\|/.test(s.strategy)); // only this strategy's own open signal blocks a repeat
+    if (!stale && sig.levels && !store.openSignals(symbol, tf).some(mine)) {
+      const sd = sig.sides || { buy: [], sell: [] }, cn = l => l.map(r => ({ text: r.name, pass: r.pass }));
+      recorded = store.addSignal({ symbol, tf, dir: sig.signal, strategy: p.version, strategy_id: 'ema-rsi-trend', strategy_version: 'v1', conditions: { side: sig.signal, buy: cn(sd.buy), sell: cn(sd.sell) }, params: p, candle_t: last.t, provider: d.source, ...sig.levels, indicators: { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] }, created_at: now() });
+      if (recorded) store.addAlert(`sig:${recorded}`, 'new_signal', `${symbol} ${tf}: new ${sig.signal} signal\nStrategy: ${BASE_NAME} (original rules)\nEntry ${fmt(symbol, sig.levels.entry)} · Stop ${fmt(symbol, sig.levels.stop)} · Target ${fmt(symbol, sig.levels.target)}\nReward:risk ${sig.levels.rr}:1 · Entry check: ${entryCheck ? entryCheck.state : 'n/a'}\nExperimental rules, not a prediction. Check the app before acting.`, now());
     }
-    const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120);
+    const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120), strategies = strategyResults({ symbol, tf, closed, stale, last, livePx, sig, entryCheck });
     return { ok: true, fromCache: !!d.fromCache, cacheAgeSec: d.cacheAgeSec || 0, excludedCandles: clean.excluded.length, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
-      signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
+      strategies, signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
       indicators: i >= 0 ? { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] } : null,
       chart: closed.slice(from).map((k, j) => ({ ...k, e20: ind.e20[from + j], e50: ind.e50[from + j], e200: ind.e200[from + j] })) };
   }
@@ -125,9 +142,9 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     const px = {};
     for (const s of rows) { if (s.status !== 'open' || s.symbol in px) continue; px[s.symbol] = Object.keys(px).length >= 4 ? null : await livePrice(s.symbol); }
     return rows.map(s => {
-      if (s.status !== 'open') return s;
+      if (s.status !== 'open') return { ...s, strategy_name: nameOf(s) };
       const ms = E.TF_MIN[s.tf] * 60000, barsOld = Math.max(0, Math.floor((now() - (s.candle_t + ms)) / ms));
-      return { ...s, livePrice: px[s.symbol], check: E.entryCheck(s.dir, { entry: s.entry, stop: s.stop, target: s.target }, px[s.symbol], { barsOld }) };
+      return { ...s, strategy_name: nameOf(s), livePrice: px[s.symbol], check: E.entryCheck(s.dir, { entry: s.entry, stop: s.stop, target: s.target }, px[s.symbol], { barsOld }) };
     });
   }
   async function scan(symbol) {
@@ -136,9 +153,9 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     for (const tf of Object.keys(E.TF_MIN)) {
       const d = await snapshot(symbol, tf), ms = E.TF_MIN[tf] * 60000;
       if (!d.ok) { out.push({ tf, ok: false, error: d.error }); continue; }
-      const open = store.openSignals(symbol, tf).map(s => ({ id: s.id, dir: s.dir, entry: s.entry, stop: s.stop, target: s.target, signalT: s.candle_t + ms,
+      const open = store.openSignals(symbol, tf).map(s => ({ id: s.id, strategy: nameOf(s), strategy_id: s.strategy_id, dir: s.dir, entry: s.entry, stop: s.stop, target: s.target, signalT: s.candle_t + ms,
         check: E.entryCheck(s.dir, { entry: s.entry, stop: s.stop, target: s.target }, d.livePrice, { barsOld: Math.max(0, Math.floor((now() - (s.candle_t + ms)) / ms)) }) }));
-      out.push({ tf, ok: true, signal: d.signal, levels: d.levels, entryCheck: d.entryCheck, stale: d.stale, signalT: d.latestCandleT + ms, livePrice: d.livePrice, open });
+      out.push({ tf, ok: true, strategies: d.strategies.map(q => ({ strategy_id: q.strategy_id, strategy_version: q.strategy_version, name: q.name, result: q.result, fresh: q.fresh })), signal: d.signal, levels: d.levels, entryCheck: d.entryCheck, stale: d.stale, signalT: d.latestCandleT + ms, livePrice: d.livePrice, open });
     }
     return out;
   }
@@ -272,8 +289,9 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       for (const a of setups.filter(s => s.symbol === symbol && s.tf === tf)) {
         const def = S.resolve(store, a.strategy_id), ver = def && def.versions.find(q => q.label === a.strategy_version); if (!ver || atr == null) continue;
         const dir = def.signal(x, i, ver.params); if (!dir) continue; const lv = E.levels(dir, last.c, atr, S.RISK); if (!lv) continue;
-        const label = `${def.name} (${ver.label})`; if (store.openSignals(symbol, tf).some(s => s.dir === dir && (s.strategy === label || (def.id === 'ema-rsi-trend' && /^v1\|/.test(s.strategy))))) continue; // the original strategy's own signals count as the same idea: no double trade
-        const id = store.addSignal({ symbol, tf, dir, strategy: label, params: { strategy_id: def.id, version: ver.label, params: ver.params, approved: a.id }, candle_t: last.t, provider: d.source, ...lv, indicators: { atr }, created_at: now() });
+        const label = `${def.name} (${ver.label})`, mine = s => s.dir === dir && (s.strategy_id === def.id || (def.id === 'ema-rsi-trend' && /^v1\|/.test(s.strategy))) && (def.id === 'ema-rsi-trend' || s.strategy_version === ver.label);
+        if (store.openSignals(symbol, tf).some(mine)) continue; // only this strategy's own open signal blocks a repeat; other strategies never hide it
+        const id = store.addSignal({ symbol, tf, dir, strategy: label, strategy_id: def.id, strategy_version: ver.label, conditions: { side: dir, ...S.explain(def, x, i, ver.params) }, params: { strategy_id: def.id, version: ver.label, params: ver.params, approved: a.id }, candle_t: last.t, provider: d.source, ...lv, indicators: { atr }, created_at: now() });
         if (id) { recorded++; const ec = E.entryCheck(dir, lv, livePx, { barsOld: 0 });
           store.addAlert(`sig:${id}`, 'new_signal', `${symbol} ${tf}: new ${dir} signal\nStrategy: ${def.name} (${ver.label}), approved by you\nEntry ${fmt(symbol, lv.entry)} · Stop ${fmt(symbol, lv.stop)} · Target ${fmt(symbol, lv.target)}\nReward:risk ${lv.rr}:1 · Entry check: ${ec.state}\nTested on past data only, not a prediction. Check the app before acting.`, now()); }
       }

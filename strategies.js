@@ -4,6 +4,7 @@
 // The source links explain the indicator maths only. We do not rely on any profit claim made there.
 const E = require('./engine');
 const RISK = { atrStop: 1.5, rr: 2 };
+const C = (a, op, b) => ({ a, op, b }), K = (k, n, m) => (m == null ? { k, n } : { k, n, m }), NUM = v => ({ k: 'num', v }), CLOSE = { k: 'close' }; // rule building blocks (see rules.js)
 
 function bands(c, n = 20) { // Bollinger: average and standard deviation of the last n closes
   const mid = Array(c.length).fill(null), sd = Array(c.length).fill(null);
@@ -14,18 +15,23 @@ function prep(c) { let bb = null; return { c, ind: E.indicators(c), adx: E.adx(c
 
 const STRATEGIES = [
   { id: 'ema-rsi-trend', name: 'EMA / RSI / ATR trend follower', source: null, description: 'The original Pipwise rules (for comparison).', versions: [{ label: 'v1', params: {} }],
+    spec: () => [C(K('ema', 50), '>', K('ema', 200)), C(K('ema', 20), '>', K('ema', 50)), C(K('rsi', 14), '>=', NUM(50)), C(K('rsi', 14), '<=', NUM(70)), C(CLOSE, '>', K('ema', 20))],
     signal: (x, i) => { const d = E.decide({ close: x.c[i].c, e20: x.ind.e20[i], e50: x.ind.e50[i], e200: x.ind.e200[i], rsi: x.ind.rsi[i], atr: x.ind.atr[i] }); return d.signal === 'WAIT' ? null : d.signal; } },
   { id: 'donchian-breakout', name: 'Donchian channel breakout', source: 'https://en.wikipedia.org/wiki/Donchian_channel', description: 'BUY when the close breaks above the highest high of the previous n candles, SELL when it breaks below the lowest low.',
     versions: [{ label: 'n20', params: { n: 20 } }, { label: 'n55', params: { n: 55 } }],
+    spec: p => [C(CLOSE, '>', K('hh', p.n))],
     signal: (x, i, p) => { if (i < p.n) return null; let hi = -Infinity, lo = Infinity; for (let j = i - p.n; j < i; j++) { hi = Math.max(hi, x.c[j].h); lo = Math.min(lo, x.c[j].l); } return x.c[i].c > hi ? 'BUY' : x.c[i].c < lo ? 'SELL' : null; } },
   { id: 'rsi-dip-in-trend', name: 'RSI dip in a trend', source: 'https://en.wikipedia.org/wiki/Relative_strength_index', description: 'In an uptrend (EMA 50 above EMA 200) BUY when RSI 14 falls below the level; in a downtrend SELL when it rises above 100 minus the level.',
     versions: [{ label: 'level30', params: { level: 30 } }, { label: 'level35', params: { level: 35 } }, { label: 'level40', params: { level: 40 } }],
+    spec: p => [C(K('ema', 50), '>', K('ema', 200)), C(K('rsi', 14), '<', NUM(p.level))],
     signal: (x, i, p) => { const a = x.ind.e50[i], b = x.ind.e200[i], r = x.ind.rsi[i]; if (a == null || b == null || r == null) return null; return a > b && r < p.level ? 'BUY' : a < b && r > 100 - p.level ? 'SELL' : null; } },
   { id: 'bollinger-reversion', name: 'Bollinger band reversion', source: 'https://en.wikipedia.org/wiki/Bollinger_Bands', description: 'BUY when the close is below the lower band (20-candle average minus k standard deviations), SELL when above the upper band.',
     versions: [{ label: 'k2', params: { k: 2 } }, { label: 'k2.5', params: { k: 2.5 } }],
+    spec: p => [C(CLOSE, '<', K('bbL', 20, p.k))],
     signal: (x, i, p) => { const m = x.bb.mid[i], s = x.bb.sd[i]; if (m == null || !s) return null; return x.c[i].c < m - p.k * s ? 'BUY' : x.c[i].c > m + p.k * s ? 'SELL' : null; } },
   { id: 'ema-cross-adx', name: 'EMA 20/50 cross with trend strength', source: 'https://en.wikipedia.org/wiki/Average_directional_movement_index', description: 'BUY when EMA 20 crosses above EMA 50 while ADX 14 is at least the level; SELL on the opposite cross.',
     versions: [{ label: 'adx20', params: { adx: 20 } }, { label: 'adx25', params: { adx: 25 } }],
+    spec: p => [{ cross: 'up', a: K('ema', 20), b: K('ema', 50) }, C({ k: 'adx' }, '>=', NUM(p.adx))],
     signal: (x, i, p) => { const { e20, e50 } = x.ind, a = x.adx[i]; if (i < 1 || [e20[i], e50[i], e20[i - 1], e50[i - 1], a].some(v => v == null) || a < p.adx) return null; return e20[i - 1] <= e50[i - 1] && e20[i] > e50[i] ? 'BUY' : e20[i - 1] >= e50[i - 1] && e20[i] < e50[i] ? 'SELL' : null; } },
 ];
 const find = id => STRATEGIES.find(s => s.id === id);
@@ -37,6 +43,8 @@ function resolve(store, id) {
   const versions = row.versions.filter(v => v.rules && v.rules.spec).map(v => ({ label: v.version, params: { spec: v.rules.spec } })); if (!versions.length) return null;
   return { id: row.id, name: row.name, description: row.description, source: null, origin: row.origin, versions, signal: (x, i, p) => R.signal(x, i, p.spec) };
 }
+// The evaluated conditions of any strategy at candle i (buy side and sell side), for "Why this result?" and for the signal record.
+function explain(def, x, i, params) { const spec = params && params.spec ? params.spec : R.validateSpec({ long: def.spec(params || {}) }); return R.explain(x, i, spec); }
 const dataStrategies = store => store.listStrategies().filter(s => !find(s.id)).map(s => resolve(store, s.id)).filter(Boolean);
 
 // Runs one strategy version over candles with the shared backtester (same costs, one trade at a time, 70/30 split).
@@ -52,4 +60,4 @@ function segments(trades, c, K = 4, end = null) {
   for (const tr of trades) { if (tr.netR == null || tr.t >= t1) continue; const k = Math.min(K - 1, Math.max(0, Math.floor((tr.t - t0) / w))); out[k].n++; out[k].sum += tr.netR; }
   return out.map(s => ({ trades: s.n, avgR: s.n ? s.sum / s.n : null }));
 }
-module.exports = { STRATEGIES, find, resolve, dataStrategies, prep, backtestStrategy, segments, RISK };
+module.exports = { STRATEGIES, find, resolve, dataStrategies, explain, prep, backtestStrategy, segments, RISK };

@@ -1,6 +1,9 @@
 'use strict';
 // SQLite persistence (built-in node:sqlite, no dependencies). Signals are never rewritten except to record their outcome.
 const { DatabaseSync } = require('node:sqlite');
+// Gives older signals their strategy identity. Safe to repeat. Unknown signals stay empty.
+const BACKFILL = `UPDATE signals SET strategy_id='ema-rsi-trend', strategy_version='v1' WHERE strategy_id IS NULL AND strategy LIKE 'v1|%';
+UPDATE signals SET strategy_id=json_extract(params,'$.strategy_id'), strategy_version=json_extract(params,'$.version') WHERE strategy_id IS NULL AND json_valid(params) AND json_extract(params,'$.strategy_id') IS NOT NULL;`;
 const MIGRATIONS = [`
 CREATE TABLE signals(id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, tf TEXT NOT NULL, dir TEXT NOT NULL CHECK(dir IN('BUY','SELL')),
  strategy TEXT NOT NULL, params TEXT NOT NULL, candle_t INTEGER NOT NULL, provider TEXT NOT NULL, entry REAL NOT NULL, stop REAL NOT NULL,
@@ -26,14 +29,17 @@ CREATE TABLE experiments(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind I
 CREATE INDEX idx_exp_status ON experiments(status,priority);`,
 `ALTER TABLE experiments ADD COLUMN not_before INTEGER;`,
 `CREATE TABLE approved_setups(id INTEGER PRIMARY KEY, strategy_id TEXT NOT NULL, strategy_version TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,
- status TEXT NOT NULL DEFAULT 'active' CHECK(status IN('active','stopped')), approved_at INTEGER NOT NULL, note TEXT, UNIQUE(strategy_id,strategy_version,symbol,tf));`];
+ status TEXT NOT NULL DEFAULT 'active' CHECK(status IN('active','stopped')), approved_at INTEGER NOT NULL, note TEXT, UNIQUE(strategy_id,strategy_version,symbol,tf));`,
+`ALTER TABLE signals ADD COLUMN strategy_id TEXT; ALTER TABLE signals ADD COLUMN strategy_version TEXT; ALTER TABLE signals ADD COLUMN conditions TEXT;
+CREATE INDEX idx_sig_strategy ON signals(strategy_id,symbol,tf,status);
+${BACKFILL}`];
 // The strategy Pipwise already uses, written down as data so new strategies can be compared with it. The live engine does not read this.
 const BASELINE_RULES = { entry: { BUY: ['EMA50 > EMA200', 'EMA20 > EMA50', 'RSI14 inside the BUY range', 'close > EMA20'], SELL: ['EMA50 < EMA200', 'EMA20 < EMA50', 'RSI14 inside the SELL range', 'close < EMA20'] },
   stop: 'atrStop x ATR14 from the entry', target: 'rr x the stop distance', defaults: { rsiBull: [50, 70], rsiBear: [30, 50], atrStop: 1.5, rr: 2 }, timeframes: ['15min', '1h', '4h'] };
 
 // Columns that make up a backup file. Order matters for restore.
 const TABLES = {
-  signals: ['id', 'symbol', 'tf', 'dir', 'strategy', 'params', 'candle_t', 'provider', 'entry', 'stop', 'target', 'rr', 'indicators', 'created_at', 'status', 'r', 'resolved_t', 'assumptions'],
+  signals: ['id', 'symbol', 'tf', 'dir', 'strategy', 'params', 'candle_t', 'provider', 'entry', 'stop', 'target', 'rr', 'indicators', 'created_at', 'status', 'r', 'resolved_t', 'assumptions', 'strategy_id', 'strategy_version', 'conditions'],
   audit_signals: ['id', 'source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t', 'created_at', 'status', 'r', 'resolved_t'],
   alerts: ['id', 'key', 'type', 'message', 'created_at', 'read', 'sent'],
   settings: ['key', 'value'],
@@ -77,12 +83,13 @@ function open(path = ':memory:') {
           }
           out.added[t] = n; out.updated[t] = u;
         }
+        db.exec(BACKFILL); // older backups carry no strategy identity: complete it
       });
       return out;
     },
     addSignal(s) {
-      const r = q(`INSERT OR IGNORE INTO signals(symbol,tf,dir,strategy,params,candle_t,provider,entry,stop,target,rr,indicators,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(s.symbol, s.tf, s.dir, s.strategy, JSON.stringify(s.params), s.candle_t, s.provider, s.entry, s.stop, s.target, s.rr, JSON.stringify(s.indicators), s.created_at);
+      const r = q(`INSERT OR IGNORE INTO signals(symbol,tf,dir,strategy,params,candle_t,provider,entry,stop,target,rr,indicators,created_at,strategy_id,strategy_version,conditions) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(s.symbol, s.tf, s.dir, s.strategy, JSON.stringify(s.params), s.candle_t, s.provider, s.entry, s.stop, s.target, s.rr, JSON.stringify(s.indicators), s.created_at, s.strategy_id ?? null, s.strategy_version ?? null, s.conditions ? JSON.stringify(s.conditions) : null);
       return r.changes ? Number(r.lastInsertRowid) : null; // null = duplicate
     },
     openSignals: (symbol, tf) => q(`SELECT * FROM signals WHERE status='open' AND symbol=? AND tf=? ORDER BY candle_t`).all(symbol, tf),

@@ -58,7 +58,10 @@ function holds(x, conds, i) {
 }
 function signal(x, i, spec) { const L = spec.long.length > 0 && holds(x, spec.long, i), S = spec.short.length > 0 && holds(x, spec.short, i); return L && !S ? 'BUY' : S && !L ? 'SELL' : null; }
 const name = o => ({ close: 'close', adx: 'ADX 14', num: o.v, ema: `EMA ${o.n}`, rsi: `RSI ${o.n}`, hh: `highest high of the previous ${o.n} candles`, ll: `lowest low of the previous ${o.n} candles`, bbU: `upper Bollinger band (${o.n}, ${o.m} sd)`, bbL: `lower Bollinger band (${o.n}, ${o.m} sd)` }[o.k]);
-const describe = spec => { const t = cs => cs.map(c => (c.cross ? `${name(c.a)} crosses ${c.cross === 'up' ? 'above' : 'below'} ${name(c.b)}` : `${name(c.a)} ${c.op} ${name(c.b)}`)).join(' AND '); return { long: t(spec.long), short: spec.short.length ? t(spec.short) : '(no sell rule)' }; };
+const text = c => (c.cross ? `${name(c.a)} crosses ${c.cross === 'up' ? 'above' : 'below'} ${name(c.b)}` : `${name(c.a)} ${c.op} ${name(c.b)}`);
+const describe = spec => { const t = cs => cs.map(text).join(' AND '); return { long: t(spec.long), short: spec.short.length ? t(spec.short) : '(no sell rule)' }; };
+// Each condition on its own, passing or failing, at candle i. This is the evaluated-conditions record behind "Why this result?".
+const explain = (x, i, spec) => { const one = cs => cs.map(c => ({ text: text(c), pass: holds(x, [c], i) })); return { buy: one(spec.long), sell: one(spec.short) }; };
 
 // Checks a strategy a person pastes in: id, name, and 1-6 versions, each a spec.
 function validateStrategyInput(o, takenIds = []) {
@@ -70,4 +73,4 @@ function validateStrategyInput(o, takenIds = []) {
   const seen = new Set(), versions = o.versions.map((v, i) => { const label = String((v || {}).label || ''); if (!/^[a-z0-9.-]{1,20}$/.test(label) || seen.has(label)) throw new Error(`version ${i + 1}: label must be 1-20 characters (letters, numbers, dot, dash) and unique`); seen.add(label); return { label, spec: validateSpec(v.spec) }; });
   return { id: o.id, name: nm, description: String(o.description || '').slice(0, 300), versions };
 }
-module.exports = { validateSpec, validateStrategyInput, mirror, signal, describe, MAX_CONDS };
+module.exports = { validateSpec, validateStrategyInput, mirror, signal, describe, explain, MAX_CONDS };
