@@ -73,12 +73,16 @@ function open(path = ':memory:') {
           // A record the app already has as OPEN, which the backup shows as finished, is completed from the backup. Nothing else is ever overwritten.
           const finish = r => r.status && r.status !== 'open';
           const updSig = t === 'signals' && db.prepare(`UPDATE signals SET status=?,r=?,resolved_t=?,assumptions=? WHERE symbol=? AND tf=? AND strategy=? AND candle_t=? AND status='open'`);
+          const updExp = t === 'experiments' && db.prepare(`UPDATE experiments SET status=?,result=?,rejection_reason=?,needs_validation=?,error=NULL,started_at=?,finished_at=?,retry_count=?,not_before=NULL,updated_at=? WHERE dedupe_key=? AND status IN ('proposed','queued','running','blocked')`); // a finished test in the backup completes the same test that is only waiting here
+          const doneExp = r => ['completed', 'rejected', 'awaiting_validation'].includes(r.status);
           const updAud = t === 'audit_signals' && db.prepare(`UPDATE audit_signals SET status=?,r=?,resolved_t=? WHERE source=? AND symbol=? AND dir=? AND entry=? AND stop=? AND target=? AND signal_t=? AND status='open'`);
           for (const r of rows) {
             if (!r || typeof r !== 'object') throw new Error(`Bad backup row in ${t}`);
             const row = { ...r }; if (t === 'alerts') { row.key = 'restored:' + String(r.key).replace(/^restored:/, ''); row.sent = 1; } // restored alerts are history: never re-sent to Telegram
             if (dupe && dupe.get(...DUPE[t].map(c => val(row, c, t)))) { if (updAud && finish(row)) u += updAud.run(...['status', 'r', 'resolved_t', 'source', 'symbol', 'dir', 'entry', 'stop', 'target', 'signal_t'].map(c => val(row, c, t))).changes; continue; }
+            if (t === 'experiments' && row.status === 'running') { row.status = 'queued'; row.started_at = null; row.error = 'Was running when the backup was taken'; } // nothing is running it now: let it run again
             const ch = ins.run(...cols.map(c => val(row, c, t))).changes; n += ch;
+            if (!ch && updExp && doneExp(row)) u += updExp.run(row.status, val(row, 'result', t), val(row, 'rejection_reason', t), val(row, 'needs_validation', t), val(row, 'started_at', t), val(row, 'finished_at', t), val(row, 'retry_count', t) ?? 0, val(row, 'updated_at', t) ?? Date.now(), row.dedupe_key).changes;
             if (!ch && updSig && finish(row)) u += updSig.run(...['status', 'r', 'resolved_t', 'assumptions', 'symbol', 'tf', 'strategy', 'candle_t'].map(c => val(row, c, t))).changes;
           }
           out.added[t] = n; out.updated[t] = u;
@@ -153,6 +157,9 @@ function open(path = ':memory:') {
     },
     setApproval: (id, status) => q(`UPDATE approved_setups SET status=? WHERE id=?`).run(status, id).changes,
     passedExperiment: (id, v, symbol, tf) => !!q(`SELECT 1 FROM experiments WHERE strategy_id=? AND strategy_version=? AND symbol=? AND tf=? AND status='awaiting_validation' AND params LIKE '%"mode":"library"%' AND params LIKE '%"crit":2%' LIMIT 1`).get(id, v, symbol, tf),
+    // For the screen: running first, then the newest finished, then blocked, then waiting in the order they will run.
+    listExperimentsView: (limit = 25) => q(`SELECT * FROM experiments ORDER BY CASE WHEN status='running' THEN 0 WHEN status IN ('completed','rejected','awaiting_validation') THEN 1 WHEN status='blocked' THEN 2 ELSE 3 END, CASE WHEN status IN ('completed','rejected','awaiting_validation') THEN -COALESCE(finished_at,0) ELSE 0 END, priority ASC, id ASC LIMIT ?`).all(Math.min(limit, 500)),
+    experimentProgress: () => q(`SELECT symbol, tf, COUNT(*) AS total, SUM(CASE WHEN finished_at IS NOT NULL THEN 1 ELSE 0 END) AS done FROM experiments WHERE params LIKE '%"mode":"library"%' AND params LIKE '%"crit":2%' GROUP BY symbol, tf ORDER BY MIN(id)`).all(),
     finishedSince: t => q(`SELECT COUNT(*) AS n FROM experiments WHERE finished_at>=?`).get(t).n,
     hasStrategyVersion: (id, v) => !!q(`SELECT 1 FROM strategy_versions WHERE strategy_id=? AND version=?`).get(id, v),
     listExperiments: (limit = 100) => q(`SELECT * FROM experiments ORDER BY id DESC LIMIT ?`).all(Math.min(limit, 500)),

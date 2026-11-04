@@ -68,7 +68,7 @@ function candidates(store) {
 function isPromising(passed) { const f = passed.filter(p => p.finalTrades >= 10); return passed.length >= 2 && f.length >= 2 && f.filter(p => p.finalAvgR > 0).length * 2 > f.length; }
 function register(store) { for (const d of S.STRATEGIES) for (const v of d.versions) store.registerStrategy(d, v); } // idempotent
 
-function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLimit = 10, backoffMs = 300000, callBudget = 3 }) {
+function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLimit = 10, backoffMs = 300000, callBudget = 3, minDbAgeMs = 3600000 }) {
   return {
     enqueue(spec = {}) {
       if (!INSTRUMENTS.includes(spec.symbol) || !E.TF_MIN[spec.tf]) throw new Error('Unsupported pair or timeframe');
@@ -99,7 +99,8 @@ function createRunner({ store, service, now = Date.now, maxRetries = 3, dailyLim
       }
       store.setSetting('last_sweep', `${round}|v2`); return { queued, existing, round };
     },
-    autoPlan() { // once a month, when nothing is waiting, plan a fresh sweep on newer data
+    autoPlan() { // once a month, when nothing is waiting, plan a fresh sweep on newer data. Not on a brand-new database: after a wipe, a restore may be about to bring the finished tests back.
+      if (minDbAgeMs > 0 && now() - (Number(store.getSetting('db_created_at')) || 0) < minDbAgeMs) return null;
       const round = new Date(now()).toISOString().slice(0, 7), c = store.experimentCounts ? store.experimentCounts() : {};
       if (store.getSetting('last_sweep') === `${round}|v2` || (c.queued || 0) + (c.running || 0) > 0) return null; return this.planSweep();
     },
