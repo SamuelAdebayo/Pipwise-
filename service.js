@@ -1,5 +1,5 @@
 'use strict';
-const E = require('./engine');
+const E = require('./engine'), MARKET = require('./market');
 const INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'XAU/USD'];
 const MAX_BARS = 48, HTF = { '15min': '1h', '1h': '4h', '4h': '1day' }; // higher timeframe used for the trend filter
 const pipSize = s => (s.includes('JPY') ? 0.01 : s.startsWith('XAU') ? 0.1 : 0.0001); // price units per pip (XAU/USD: 1 pip = 0.10)
@@ -18,7 +18,7 @@ function cleanParams(i = {}) {
   p.version = version(p); return p;
 }
 
-function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, maxApprovals = 5, provider = 'twelvedata' }) {
+function createService({ market: M = MARKET, store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, maxApprovals = 5, provider = 'twelvedata' }) {
   const cache = new Map(), lastTracked = {}, att = {}, calls = [];
   const ttlFor = tf => (ttlMs ? ({ '15min': 120000, '1h': 300000, '4h': 600000, '1day': 3600000 }[tf] || ttlMs) : 0); // slower timeframes need fewer refreshes
   const params = () => cleanParams(JSON.parse(store.getSetting('params') || '{}'));
@@ -72,6 +72,14 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     }
     return out;
   }
+  // The entry check, aware of the market: never ENTER while the market is shut, the data is stale, or the signal is from before a closure.
+  function entryState(symbol, tf, dir, lv, price, signalCloseT, stale) {
+    const ms = E.TF_MIN[tf] * 60000, t = now();
+    if (!M.isOpen(symbol, t)) return { state: 'CLOSED', text: 'The market is closed. This cannot be entered until it reopens.' };
+    if (M.closedMs(symbol, signalCloseT, t) >= 3 * 3600000) return { state: 'EXPIRED', text: 'This signal is from before a market closure. Wait for a new setup.' };
+    if (stale) return { state: 'STALE', text: 'Price data is not fresh, so the entry cannot be checked.' };
+    return E.entryCheck(dir, lv, price, { barsOld: Math.floor(M.openMs(symbol, signalCloseT, t) / ms) });
+  }
   async function snapshot(symbol, tf, force = false) {
     const p = params(); let d;
     try { d = await load(symbol, tf, 400, force); }
@@ -87,17 +95,18 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     const sig = i >= 0 ? E.signalAt(ind, closed, i, p) : { signal: 'WAIT', rules: [], levels: null };
     const ms = E.TF_MIN[tf] * 60000, raw = cc[cc.length - 1];
     const live = raw && raw.t + ms > now() ? { price: raw.c, t: raw.t } : null, livePx = live ? live.price : last ? last.c : null; // live = price of the still-forming candle
-    const entryCheck = sig.levels ? E.entryCheck(sig.signal, sig.levels, livePx, { barsOld: last ? Math.max(0, Math.floor((now() - (last.t + ms)) / ms)) : 0 }) : null;
+    const marketOpen = M.isOpen(symbol, now()), actionable = !stale && marketOpen && !!last && M.closedWhileOpen(symbol, last.t, ms); // a new signal needs fresh data, an open market, and a candle that closed while it was open
+    const entryCheck = sig.levels ? entryState(symbol, tf, sig.signal, sig.levels, livePx, last ? last.t + ms : now(), stale) : null;
     let recorded = null;
     const mine = s => s.dir === sig.signal && (s.strategy_id === 'ema-rsi-trend' || /^v1\|/.test(s.strategy)); // only this strategy's own open signal blocks a repeat
-    if (!stale && sig.levels && !store.openSignals(symbol, tf).some(mine)) {
+    if (actionable && sig.levels && !store.openSignals(symbol, tf).some(mine)) {
       const sd = sig.sides || { buy: [], sell: [] }, cn = l => l.map(r => ({ text: r.name, pass: r.pass }));
       recorded = store.addSignal({ symbol, tf, dir: sig.signal, strategy: p.version, strategy_id: 'ema-rsi-trend', strategy_version: 'v1', conditions: { side: sig.signal, buy: cn(sd.buy), sell: cn(sd.sell) }, params: p, candle_t: last.t, provider: d.source, ...sig.levels, indicators: { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] }, created_at: now() });
       if (recorded) store.addAlert(`sig:${recorded}`, 'new_signal', `${symbol} ${tf}: new ${sig.signal} signal\nStrategy: ${BASE_NAME} (original rules)\nEntry ${fmt(symbol, sig.levels.entry)} · Stop ${fmt(symbol, sig.levels.stop)} · Target ${fmt(symbol, sig.levels.target)}\nReward:risk ${sig.levels.rr}:1 · Entry check: ${entryCheck ? entryCheck.state : 'n/a'}\nExperimental rules, not a prediction. Check the app before acting.`, now());
     }
-    const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120), strategies = strategyResults({ symbol, tf, closed, stale, last, livePx, sig, entryCheck });
+    const trackingLimited = track(symbol, tf, closed), from = Math.max(0, closed.length - 120), strategies = strategyResults({ symbol, tf, closed, stale: !actionable, last, livePx, sig, entryCheck });
     return { ok: true, fromCache: !!d.fromCache, cacheAgeSec: d.cacheAgeSec || 0, excludedCandles: clean.excluded.length, live, livePrice: livePx, entryCheck, symbol, tf, source: d.source, fetchedAt: d.fetchedAt, latestCandleT: last ? last.t : null, latestClose: last ? last.c : null, stale, strategy: p.version, params: p,
-      strategies, signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
+      strategies, market: { open: marketOpen, nextOpen: marketOpen ? null : M.nextOpen(symbol, now()) }, signal: sig.signal, rules: sig.rules, reason: sig.reason || null, levels: sig.levels, newSignalId: recorded, trackingLimited,
       indicators: i >= 0 ? { e20: ind.e20[i], e50: ind.e50[i], e200: ind.e200[i], rsi: ind.rsi[i], atr: ind.atr[i] } : null,
       chart: closed.slice(from).map((k, j) => ({ ...k, e20: ind.e20[from + j], e50: ind.e50[from + j], e200: ind.e200[from + j] })) };
   }
@@ -125,7 +134,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
   async function trackAll() {
     let n = 0;
     for (const { symbol, tf } of store.openPairs().slice(0, 8)) {
-      const ms = E.TF_MIN[tf] * 60000, key = `${symbol}|${tf}`, expected = Math.floor((now() - 15000) / ms) * ms - ms;
+      const ms = E.TF_MIN[tf] * 60000, key = `${symbol}|${tf}`, expected = M.lastCandleOpen(symbol, E.TF_MIN[tf], now() - 15000);
       if (lastTracked[key] >= expected) continue;
       const a = att[key]; if (a && a.expected === expected && a.n >= 5) continue;
       att[key] = { expected, n: (a && a.expected === expected ? a.n : 0) + 1 };
@@ -133,10 +142,11 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     }
     return n;
   }
+  const liveStale = {};
   async function livePrice(symbol) {
     let best = null;
-    for (const [k, c] of cache) if (k.startsWith(symbol + '|') && now() - c.at < 90000 && (!best || c.at > best.at)) best = c;
-    try { const d = best ? best.data : await load(symbol, '15min', 3), k = d.candles[d.candles.length - 1]; return k ? k.c : null; } catch { return null; }
+    for (const [key, c] of cache) if (key.startsWith(symbol + '|') && now() - c.at < 90000 && (!best || c.at > best.at)) best = { ...c, key };
+    try { const tfk = best ? best.key.split('|')[1] : '15min', d = best ? best.data : await load(symbol, '15min', 3), k = d.candles[d.candles.length - 1]; liveStale[symbol] = !k || E.isStale([k], tfk, now()); return k ? k.c : null; } catch { liveStale[symbol] = true; return null; }
   }
   async function enrich(rows) {
     const px = {};
@@ -144,7 +154,7 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
     return rows.map(s => {
       if (s.status !== 'open') return { ...s, strategy_name: nameOf(s) };
       const ms = E.TF_MIN[s.tf] * 60000, barsOld = Math.max(0, Math.floor((now() - (s.candle_t + ms)) / ms));
-      return { ...s, strategy_name: nameOf(s), livePrice: px[s.symbol], check: E.entryCheck(s.dir, { entry: s.entry, stop: s.stop, target: s.target }, px[s.symbol], { barsOld }) };
+      return { ...s, strategy_name: nameOf(s), livePrice: px[s.symbol], check: entryState(s.symbol, s.tf, s.dir, { entry: s.entry, stop: s.stop, target: s.target }, px[s.symbol], s.candle_t + ms, liveStale[s.symbol]) };
     });
   }
   async function scan(symbol) {
@@ -154,8 +164,8 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
       const d = await snapshot(symbol, tf), ms = E.TF_MIN[tf] * 60000;
       if (!d.ok) { out.push({ tf, ok: false, error: d.error }); continue; }
       const open = store.openSignals(symbol, tf).map(s => ({ id: s.id, strategy: nameOf(s), strategy_id: s.strategy_id, dir: s.dir, entry: s.entry, stop: s.stop, target: s.target, signalT: s.candle_t + ms,
-        check: E.entryCheck(s.dir, { entry: s.entry, stop: s.stop, target: s.target }, d.livePrice, { barsOld: Math.max(0, Math.floor((now() - (s.candle_t + ms)) / ms)) }) }));
-      out.push({ tf, ok: true, strategies: d.strategies.map(q => ({ strategy_id: q.strategy_id, strategy_version: q.strategy_version, name: q.name, result: q.result, fresh: q.fresh })), signal: d.signal, levels: d.levels, entryCheck: d.entryCheck, stale: d.stale, signalT: d.latestCandleT + ms, livePrice: d.livePrice, open });
+        check: entryState(symbol, tf, s.dir, { entry: s.entry, stop: s.stop, target: s.target }, d.livePrice, s.candle_t + ms, d.stale) }));
+      out.push({ tf, ok: true, market: d.market, strategies: d.strategies.map(q => ({ strategy_id: q.strategy_id, strategy_version: q.strategy_version, name: q.name, result: q.result, fresh: q.fresh })), signal: d.signal, levels: d.levels, entryCheck: d.entryCheck, stale: d.stale, signalT: d.latestCandleT + ms, livePrice: d.livePrice, open });
     }
     return out;
   }
@@ -276,8 +286,9 @@ function createService({ store, fetchCandles, now = Date.now, ttlMs = 60000, min
   async function scanApproved() {
     const S = require('./strategies'), setups = store.listApprovals().filter(a => a.status === 'active'); let checked = 0, recorded = 0;
     for (const key of [...new Set(setups.map(a => `${a.symbol}|${a.tf}`))]) {
-      const [symbol, tf] = key.split('|'), ms = E.TF_MIN[tf] * 60000, expected = Math.floor((now() - 15000) / ms) * ms - ms;
-      if (lastSignalCheck[key] >= expected) continue; const at = sigAtt[key]; if (at && at.expected === expected && at.n >= 5) continue;
+      const [symbol, tf] = key.split('|'), ms = E.TF_MIN[tf] * 60000, expected = M.lastCandleOpen(symbol, E.TF_MIN[tf], now() - 15000);
+      if (lastSignalCheck[key] >= expected) continue; if (!M.isOpen(symbol, now())) { lastSignalCheck[key] = expected; continue; } // market shut: nothing to evaluate, and no repeated requests
+      const at = sigAtt[key]; if (at && at.expected === expected && at.n >= 5) continue;
       sigAtt[key] = { expected, n: (at && at.expected === expected ? at.n : 0) + 1 };
       let d; try { d = await load(symbol, tf, 400); } catch { continue; } // a data failure never becomes a signal
       const clean = E.sanitize(d.candles), cc = clean.candles, lastGood = cc.length ? cc[cc.length - 1].t : -1;
