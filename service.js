@@ -6,6 +6,7 @@ const pipSize = s => (s.includes('JPY') ? 0.01 : s.startsWith('XAU') ? 0.1 : 0.0
 const LAB_ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. Spread and slippage are both charged as cost / risk in R, using the values you entered; gaps are not modelled. One position at a time. First 70% of time = development, last 30% = out-of-sample.`;
 const ASSUMPTIONS = `Entry = signal candle close. Outcome from later completed candles of the same timeframe. Stop and target in one candle = ambiguous. Expires after ${MAX_BARS} bars. No spread, slippage or gaps modelled.`;
 const fmt = (s, x) => Number(x).toFixed(s.includes('JPY') ? 3 : s.startsWith('XAU') ? 2 : 5);
+const HISTORY_LOST = 'The price history no longer reaches back to this signal, so its outcome could not be tracked. Marked expired; it is not counted as a win or a loss.';
 const OUTCOME_TEXT = { target: r => `WIN +${r}R (target hit)`, stop: r => `LOSS ${r}R (stop hit)`, ambiguous: () => 'UNCLEAR (stop and target in the same candle)', expired: () => `EXPIRED (no result after ${MAX_BARS} candles)` };
 const BASE_NAME = 'EMA / RSI / ATR trend follower', nameOf = s => (/^v1\|/.test(s.strategy || '') ? BASE_NAME : s.strategy);
 const version = p => `v1|bull${p.rsiBull.join('-')}|bear${p.rsiBear.join('-')}|atr${p.atrStop}|rr${p.rr}`;
@@ -46,7 +47,13 @@ function createService({ market: M = MARKET, store, fetchCandles, now = Date.now
     const ms = E.TF_MIN[tf] * 60000; let limited = 0;
     if (closed.length) lastTracked[`${symbol}|${tf}`] = closed[closed.length - 1].t;
     for (const s of store.openSignals(symbol, tf)) {
-      if (!closed.length || closed[0].t > s.candle_t + ms) { limited++; continue; } // history no longer covers this signal
+      if (!closed.length) { limited++; continue; }
+      // History is missing only if the market was open between the signal candle and the oldest candle we were given. A weekend gap is not missing history.
+      if (closed[0].t > s.candle_t + ms && M.openMs(symbol, s.candle_t + ms, closed[0].t) > 0) {
+        store.tx(() => { if (store.resolveSignal(s.id, 'expired', null, closed[closed.length - 1].t, HISTORY_LOST))
+          store.addAlert(`out:${s.id}`, 'outcome', `${s.symbol} ${s.tf} ${s.dir}: EXPIRED (price history no longer available, so it could not be tracked)\nEntry ${fmt(s.symbol, s.entry)} · Stop ${fmt(s.symbol, s.stop)} · Target ${fmt(s.symbol, s.target)}`, now()); });
+        continue;
+      }
       const future = closed.filter(k => k.t > s.candle_t);
       const r = E.resolve({ signal: s.dir, levels: { stop: s.stop, target: s.target, rr: s.rr } }, future, MAX_BARS);
       if (r.status === 'open') continue;

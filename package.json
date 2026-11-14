@@ -1,1 +1,1 @@
-{"name":"pipwise","version":"0.1.0","private":true,"engines":{"node":">=22.13"},"scripts":{"test":"node --test test/pipwise.test.js test/app.test.js","start":"node server.js"}}
+{"name": "pipwise", "version": "0.1.0", "private": true, "engines": {"node": ">=22.13"}, "scripts": {"test": "node --test test/*.test.js", "start": "node server.js"}}
