@@ -2,7 +2,7 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const E = require('./engine'), { INSTRUMENTS, cleanParams } = require('./service');
 
-function createApp({ service, store, config, runner }) {
+function createApp({ service, store, config, runner, health }) {
   const pj = s => { try { return s == null ? null : JSON.parse(s); } catch { return s; } };
   const page = fs.readFileSync(path.join(__dirname, 'index.html'));
   const send = (res, code, body, type = 'application/json') => { res.writeHead(code, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' }); res.end(type === 'application/json' ? JSON.stringify(body) : body); };
@@ -34,6 +34,7 @@ function createApp({ service, store, config, runner }) {
       if (req.method === 'GET' && p === '/api/approvals') return send(res, 200, store.listApprovals().map(a => ({ ...a, name: (require('./strategies').resolve(store, a.strategy_id) || {}).name || a.strategy_id })));
       if (req.method === 'POST' && p === '/api/approvals') { const b = await body(req); return send(res, 200, service.approveSetup({ strategy_id: b.strategy_id, version: b.version, symbol: b.symbol, tf: b.tf })); }
       if (req.method === 'POST' && (p === '/api/approvals/stop' || p === '/api/approvals/resume')) return send(res, 200, service.setApproval((await body(req)).id, p.endsWith('stop') ? 'stopped' : 'active'));
+      if (req.method === 'GET' && p === '/api/health') return send(res, 200, { now: Date.now(), storage: { path: (config.storage || {}).path || '', isDefault: !!(config.storage || {}).isDefault, createdAt: Number(store.getSetting('db_created_at')) || null }, queue: store.experimentCounts(), approvals: store.listApprovals().filter(a => a.status === 'active').length, telegram: { token: !!(config.telegram || {}).token, chat: !!(config.telegram || {}).chat }, ...(health ? health() : {}) });
       if (req.method === 'GET' && p === '/api/alerts') return send(res, 200, store.listAlerts());
       if (req.method === 'POST' && p === '/api/alerts/read') return send(res, 200, { updated: store.markAlertsRead() });
       if (req.method === 'GET' && p === '/api/performance') { const n = k => (u.searchParams.get(k) ? Number(u.searchParams.get(k)) : undefined); return send(res, 200, service.performance({ from: n('from'), to: n('to') })); }
@@ -77,10 +78,13 @@ if (require.main === module) {
   if (host !== '127.0.0.1' && !config.password) { console.error('Refusing to listen on a public address without PIPWISE_PASSWORD.'); process.exit(1); }
   const service = createService({ store, fetchCandles: provider.fetchCandles, maxApprovals: Number(env.MAX_APPROVALS || 5) });
   if (tgToken && tgChat && !store.getSetting('tg_baseline')) { store.markAllSent(); store.setSetting('tg_baseline', '1'); } // never send old alerts when Telegram is first enabled
-  const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || 'new_signal,outcome,api_error').split(',').map(x => x.trim()) });
+  const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || N.DEFAULT_TYPES.join(',')).split(',').map(x => x.trim()) });
   const runner = require('./experiments').createRunner({ store, service, dailyLimit: Number(env.EXPERIMENT_DAILY_LIMIT || 200) }); require('./experiments').register(store); runner.recover(); // tests interrupted by a restart go back in the queue
-  const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, deliver: async () => { await service.trackAll().catch(() => {}); await service.auditTrack().catch(() => {}); return deliver(); } });
-  let busy = false; const run = async () => { if (busy) return; busy = true; try { await sch.tick(); await service.scanApproved(); if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); await runner.runBatch(5); } catch { console.error('Background check failed'); } finally { busy = false; } };
-  if (config.hasKey) { setTimeout(run, 5000); setInterval(run, 60000); }
-  http.createServer(createApp({ service, store, config, runner })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
+  const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, onMiss: m => service.recordMiss(m.symbol, m.tf, m.expected, m.reason, m.attempts) });
+  // Each step is isolated: one failing step is recorded (with its name and message) and the others still run. Alerts are delivered before research starts.
+  const bg = require('./background').createBackground({ store, steps: [
+    { name: 'watchlist', run: () => sch.tick() }, { name: 'approved-strategies', run: () => service.scanApproved() }, { name: 'outcome-tracking', run: () => service.trackAll() }, { name: 'audit-tracking', run: () => service.auditTrack() },
+    { name: 'telegram', run: () => deliver() }, { name: 'research-planning', run: async () => { if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); } }, { name: 'research-tests', run: () => runner.runBatch(5) }] });
+  if (config.hasKey) { setTimeout(() => bg.cycle(), 5000); setInterval(() => bg.cycle(), 60000); }
+  http.createServer(createApp({ service, store, config, runner, health: () => ({ background: bg.snapshot(), evaluations: service.evaluationState(), watchlist: sch.state(), calls: service.callsInLastMinute() }) })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
 }

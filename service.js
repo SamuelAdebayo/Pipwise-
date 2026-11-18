@@ -1,5 +1,5 @@
 'use strict';
-const E = require('./engine'), MARKET = require('./market');
+const E = require('./engine'), MARKET = require('./market'), { retryDelay } = require('./retry');
 const INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'XAU/USD'];
 const MAX_BARS = 48, HTF = { '15min': '1h', '1h': '4h', '4h': '1day' }; // higher timeframe used for the trend filter
 const pipSize = s => (s.includes('JPY') ? 0.01 : s.startsWith('XAU') ? 0.1 : 0.0001); // price units per pip (XAU/USD: 1 pip = 0.10)
@@ -272,7 +272,13 @@ function createService({ market: M = MARKET, store, fetchCandles, now = Date.now
       split3: { cutValidation: res.split3.cutValidation, cutFinal: res.split3.cutFinal, frozenAt: closed[closed.length - 1].t, selection: pack(res.split3.selection), development: pack(res.split3.development), validation: pack(res.split3.validation), final: pack(res.split3.final) } };
   }
   // ---- Approved strategies: only combinations YOU approved create live signals ----
-  const lastSignalCheck = {}, sigAtt = {};
+  const lastSignalCheck = {}, sigAtt = {}, missed = { count: 0, last: null };
+  const MISS_TEXT = { provider_late: 'the provider had not published it', data_unavailable: 'the data request failed', invalid_data: 'the newest candle failed validation', stale_data: 'the data was stale' };
+  function recordMiss(symbol, tf, expected, reason, attempts) { // a candle that was never evaluated is never dropped silently
+    missed.count++; missed.last = { symbol, tf, expected, reason, attempts, at: now() };
+    store.addAlert(`missed:${symbol}:${tf}:${Math.floor(expected / 3600000)}`, 'missed_evaluation', `${symbol} ${tf}: could not evaluate the candle that opened ${new Date(expected).toISOString().slice(0, 16).replace('T', ' ')} UTC (${MISS_TEXT[reason] || reason}). Signals from that candle were not created.`, now());
+  }
+  const evaluationState = () => ({ missed: missed.count, lastMissed: missed.last, setups: Object.fromEntries(Object.keys({ ...lastSignalCheck, ...sigAtt }).map(k => [k, { lastEvaluated: lastSignalCheck[k] || null, pending: sigAtt[k] || null }])) });
   function approveSetup(o = {}) {
     const S = require('./strategies'), def = S.resolve(store, o.strategy_id), ver = def && def.versions.find(x => x.label === o.version);
     if (!def || !ver) throw new Error('Unknown library strategy');
@@ -293,16 +299,17 @@ function createService({ market: M = MARKET, store, fetchCandles, now = Date.now
   async function scanApproved() {
     const S = require('./strategies'), setups = store.listApprovals().filter(a => a.status === 'active'); let checked = 0, recorded = 0;
     for (const key of [...new Set(setups.map(a => `${a.symbol}|${a.tf}`))]) {
-      const [symbol, tf] = key.split('|'), ms = E.TF_MIN[tf] * 60000, expected = M.lastCandleOpen(symbol, E.TF_MIN[tf], now() - 15000);
+      const [symbol, tf] = key.split('|'), ms = E.TF_MIN[tf] * 60000, expected = M.lastCandleOpen(symbol, E.TF_MIN[tf], now() - 15000), prev = sigAtt[key];
+      if (prev && prev.expected !== expected) { if (!(lastSignalCheck[key] >= prev.expected)) recordMiss(symbol, tf, prev.expected, prev.reason, prev.n); delete sigAtt[key]; } // the next candle closed and this one was never evaluated
       if (lastSignalCheck[key] >= expected) continue; if (!M.isOpen(symbol, now())) { lastSignalCheck[key] = expected; continue; } // market shut: nothing to evaluate, and no repeated requests
-      const at = sigAtt[key]; if (at && at.expected === expected && at.n >= 5) continue;
-      sigAtt[key] = { expected, n: (at && at.expected === expected ? at.n : 0) + 1 };
-      let d; try { d = await load(symbol, tf, 400); } catch { continue; } // a data failure never becomes a signal
+      const cur = sigAtt[key]; if (cur && now() < cur.nextAt) continue;
+      const fail = reason => { const n = (cur ? cur.n : 0) + 1; sigAtt[key] = { expected, n, nextAt: now() + retryDelay(n), reason }; };
+      let d; try { d = await load(symbol, tf, 400); } catch { fail('data_unavailable'); continue; } // a data failure never becomes a signal
       const clean = E.sanitize(d.candles), cc = clean.candles, lastGood = cc.length ? cc[cc.length - 1].t : -1;
-      if (!cc.length || clean.excluded.some(x => x.t > lastGood)) continue;
-      const closed = E.closedOnly(cc, tf, now()); if (!closed.length || E.isStale(closed, tf, now())) continue;
-      const i = closed.length - 1, last = closed[i]; if (last.t < expected) continue; // provider is behind: try again shortly
-      lastSignalCheck[key] = expected; checked++;
+      if (!cc.length || clean.excluded.some(x => x.t > lastGood)) { fail('invalid_data'); continue; }
+      const closed = E.closedOnly(cc, tf, now()); if (!closed.length || E.isStale(closed, tf, now())) { fail('stale_data'); continue; }
+      const i = closed.length - 1, last = closed[i]; if (last.t < expected) { fail('provider_late'); continue; } // provider is behind: ask again soon, and report it if the next candle closes first
+      delete sigAtt[key]; lastSignalCheck[key] = expected; checked++;
       const x = S.prep(closed), atr = x.ind.atr[i], raw = cc[cc.length - 1], livePx = raw.t + ms > now() ? raw.c : last.c;
       for (const a of setups.filter(s => s.symbol === symbol && s.tf === tf)) {
         const def = S.resolve(store, a.strategy_id), ver = def && def.versions.find(q => q.label === a.strategy_version); if (!ver || atr == null) continue;
@@ -319,6 +326,6 @@ function createService({ market: M = MARKET, store, fetchCandles, now = Date.now
   }
   const callsInLastMinute = () => { const t = now(); while (calls.length && t - calls[0] > 60000) calls.shift(); return calls.length; };
   const resetTracking = () => { for (const k of Object.keys(lastTracked)) delete lastTracked[k]; for (const k of Object.keys(att)) delete att[k]; }; // forces the next check to look at every open trade again
-  return { approveSetup, setApproval, scanApproved, strategyRun, typicalSpread: s => TYPICAL_SPREAD[s] ?? 0, experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
+  return { recordMiss, evaluationState, approveSetup, setApproval, scanApproved, strategyRun, typicalSpread: s => TYPICAL_SPREAD[s] ?? 0, experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };
