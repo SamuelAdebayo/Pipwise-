@@ -24,7 +24,8 @@ function checkToken(raw) {
   }
   return { token: problems.length ? '' : t, problems };
 }
-function createDelivery({ store, token, chatId, types = ['new_signal', 'outcome', 'api_error'], fetchImpl }) {
+const DEFAULT_TYPES = ['new_signal', 'outcome', 'api_error', 'missed_evaluation', 'system_error'];
+function createDelivery({ store, token, chatId, types = DEFAULT_TYPES, fetchImpl }) {
   return async function deliver() {
     if (!token || !chatId) return 0; let n = 0;
     for (const a of store.unsentAlerts(10)) {
@@ -34,4 +35,4 @@ function createDelivery({ store, token, chatId, types = ['new_signal', 'outcome'
     return n;
   };
 }
-module.exports = { checkToken, send, discoverChatId, createDelivery };
+module.exports = { DEFAULT_TYPES, checkToken, send, discoverChatId, createDelivery };

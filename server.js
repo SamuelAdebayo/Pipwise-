@@ -67,6 +67,8 @@ function createApp({ service, store, config, runner, health }) {
 module.exports = { createApp };
 
 if (require.main === module) {
+  const problems = require('./selfcheck').check(); // list every missing or outdated file at once instead of crashing on one
+  if (problems.length) { console.error('Pipwise cannot start because some files are missing or out of date:\n - ' + problems.join('\n - ')); process.exit(1); }
   const dbPath = process.env.DB_PATH || path.join(__dirname, 'pipwise.db'); // if this fails the server stops loudly; it never switches to temporary storage
   const store = require('./store').open(dbPath);
   const provider = require('./provider'), { createService } = require('./service'), { createScheduler, parseWatchlist } = require('./scheduler'), N = require('./notifier'), env = process.env;
