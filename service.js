@@ -19,21 +19,22 @@ function cleanParams(i = {}) {
   p.version = version(p); return p;
 }
 
-function createService({ market: M = MARKET, store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, maxApprovals = 5, provider = 'twelvedata' }) {
+function createService({ market: M = MARKET, store, fetchCandles, now = Date.now, ttlMs = 60000, minForceMs = 10000, maxCallsPerMin = 6, maxApprovals = 5, provider = 'twelvedata', liveDailyBudget = 300 }) {
   const cache = new Map(), lastTracked = {}, att = {}, calls = [];
   const ttlFor = tf => (ttlMs ? ({ '15min': 120000, '1h': 300000, '4h': 600000, '1day': 3600000 }[tf] || ttlMs) : 0); // slower timeframes need fewer refreshes
   const params = () => cleanParams(JSON.parse(store.getSetting('params') || '{}'));
 
-  async function load(symbol, tf, size = 400, force = false) {
+  let providerCalls = 0; // every real request to the provider, for the live budget
+  async function load(symbol, tf, size = 400, force = false, ttl) {
     const key = `${symbol}|${tf}|${size}`, hit = cache.get(key), t = now();
-    if (hit && t - hit.at < (force ? minForceMs : ttlFor(tf))) return hit.data; // cached: avoids hitting the provider on every page load
+    if (hit && t - hit.at < (force ? minForceMs : (ttl ?? ttlFor(tf)))) return hit.data; // cached: avoids hitting the provider on every page load
     const fallback = () => (hit && t - hit.at < 2 * 3600000 ? { ...hit.data, fromCache: true, cacheAgeSec: Math.round((t - hit.at) / 1000) } : null); // older data, clearly labelled
     while (calls.length && t - calls[0] > 60000) calls.shift();
     if (calls.length >= maxCallsPerMin) { // pace ourselves below the provider's per-minute limit
       const f = fallback(); if (f) return f;
       const err = new Error('Rate limit reached (Pipwise is pacing its requests)'); err.kind = 'rate_limit'; throw err;
     }
-    calls.push(t);
+    calls.push(t); providerCalls++;
     try { const data = await fetchCandles({ symbol, tf, outputsize: size }); cache.set(key, { at: now(), data }); return data; }
     catch (e) {
       const kind = e.kind || 'provider';
@@ -272,6 +273,39 @@ function createService({ market: M = MARKET, store, fetchCandles, now = Date.now
       split3: { cutValidation: res.split3.cutValidation, cutFinal: res.split3.cutFinal, frozenAt: closed[closed.length - 1].t, selection: pack(res.split3.selection), development: pack(res.split3.development), validation: pack(res.split3.validation), final: pack(res.split3.final) } };
   }
   // ---- Approved strategies: only combinations YOU approved create live signals ----
+  // ---- Live chart: the newest 2-3 candles from one small cached request. Everything returned is provider data; nothing is invented.
+  const LIVE_TTL = { '15min': 45000, '1h': 60000, '4h': 90000, '1day': 300000 }, liveTtl = tf => (ttlMs ? LIVE_TTL[tf] || 60000 : 0), liveInflight = new Map();
+  const budgetKey = () => 'live_calls_' + new Date(now()).toISOString().slice(0, 10), liveUsed = () => Number(store.getSetting(budgetKey())) || 0;
+  function mergeLive(symbol, tf, fresh) { // put genuine new candles into the cached history, so a candle that just closed is already there for the next signal refresh
+    const key = `${symbol}|${tf}|400`, hit = cache.get(key); if (!hit) return; const ms = E.TF_MIN[tf] * 60000, arr = hit.data.candles.slice();
+    for (const k of fresh) {
+      const last = arr[arr.length - 1];
+      if (!last || k.t < last.t) { const i = arr.findIndex(x => x.t === k.t); if (i >= 0) arr[i] = k; continue; }
+      if (k.t === last.t) { arr[arr.length - 1] = k; continue; }
+      if (k.t - last.t === ms || M.openMs(symbol, last.t + ms, k.t) === 0) { arr.push(k); continue; } // next candle, or the first one after a weekend / daily break
+      cache.delete(key); return; // candles are missing while the market was open: the next refresh downloads the history again
+    }
+    hit.data = { ...hit.data, candles: arr };
+  }
+  async function liveRun(symbol, tf, force) {
+    const t = now(), ms = E.TF_MIN[tf] * 60000, used = liveUsed(), budget = { used, limit: liveDailyBudget };
+    if (!M.isOpen(symbol, t)) return { ok: true, symbol, tf, now: t, market: { open: false, nextOpen: M.nextOpen(symbol, t) }, candles: [], nextPollMs: 300000, budget };
+    if (used >= liveDailyBudget) return { ok: true, symbol, tf, now: t, market: { open: true }, paused: true, candles: [], nextPollMs: 300000, budget };
+    const before = providerCalls; let d;
+    try { d = await load(symbol, tf, 3, force, liveTtl(tf)); }
+    catch (e) { return { ok: false, symbol, tf, now: t, error: { kind: e.kind || 'provider', message: e.message }, nextPollMs: 120000, budget: { used: liveUsed() + providerCalls - before, limit: liveDailyBudget } }; }
+    finally { if (providerCalls > before) store.setSetting(budgetKey(), String(liveUsed() + providerCalls - before)); }
+    const clean = E.sanitize(d.candles), cc = clean.candles, lastGood = cc.length ? cc[cc.length - 1].t : -1;
+    if (!cc.length || clean.excluded.some(x => x.t > lastGood)) return { ok: false, symbol, tf, now: t, error: { kind: 'invalid_data', message: 'The newest candle from the provider failed validation, so it was not used.' }, nextPollMs: 60000, budget: { used: liveUsed(), limit: liveDailyBudget } };
+    const fresh = cc.slice(-3); mergeLive(symbol, tf, fresh);
+    const candles = fresh.map(k => ({ t: k.t, o: k.o, h: k.h, l: k.l, c: k.c, forming: k.t + ms > t })), shut = candles.filter(k => !k.forming), newest = candles[candles.length - 1];
+    return { ok: true, symbol, tf, now: t, market: { open: true }, source: d.source, fetchedAt: d.fetchedAt, fromCache: !!d.fromCache, cacheAgeSec: d.cacheAgeSec || 0, delayed: !!d.fromCache || newest.t + 2 * ms <= t, candles, closed: shut.length ? shut[shut.length - 1].t : null, price: newest.c, nextPollMs: Math.max(liveTtl(tf), 60000), budget: { used: liveUsed(), limit: liveDailyBudget } };
+  }
+  function live(symbol, tf, { force = false } = {}) { // simultaneous polls share one request
+    const key = `${symbol}|${tf}|${force}`; if (liveInflight.has(key)) return liveInflight.get(key);
+    const p = liveRun(symbol, tf, force).finally(() => liveInflight.delete(key)); liveInflight.set(key, p); return p;
+  }
+  const _peekCache = (symbol, tf) => { const h = cache.get(`${symbol}|${tf}|400`); return h ? h.data.candles : undefined; }; // for tests
   const lastSignalCheck = {}, sigAtt = {}, missed = { count: 0, last: null };
   const MISS_TEXT = { provider_late: 'the provider had not published it', data_unavailable: 'the data request failed', invalid_data: 'the newest candle failed validation', stale_data: 'the data was stale' };
   function recordMiss(symbol, tf, expected, reason, attempts) { // a candle that was never evaluated is never dropped silently
@@ -326,6 +360,6 @@ function createService({ market: M = MARKET, store, fetchCandles, now = Date.now
   }
   const callsInLastMinute = () => { const t = now(); while (calls.length && t - calls[0] > 60000) calls.shift(); return calls.length; };
   const resetTracking = () => { for (const k of Object.keys(lastTracked)) delete lastTracked[k]; for (const k of Object.keys(att)) delete att[k]; }; // forces the next check to look at every open trade again
-  return { recordMiss, evaluationState, approveSetup, setApproval, scanApproved, strategyRun, typicalSpread: s => TYPICAL_SPREAD[s] ?? 0, experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
+  return { live, _peekCache, recordMiss, evaluationState, approveSetup, setApproval, scanApproved, strategyRun, typicalSpread: s => TYPICAL_SPREAD[s] ?? 0, experimentRun, callsInLastMinute, resetTracking, lab, auditAdd, auditTrack, auditOverview, auditDelete: id => store.deleteAudit(Number(id)), trackAll, livePrice, enrich, scan, snapshot, backtest, performance, params, cleanParams, load };
 }
 module.exports = { createService, cleanParams, INSTRUMENTS, ASSUMPTIONS };

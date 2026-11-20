@@ -21,6 +21,7 @@ function createApp({ service, store, config, runner, health }) {
       const u = new URL(req.url, 'http://x'), p = u.pathname;
       if (req.method === 'GET' && p === '/') return send(res, 200, page, 'text/html; charset=utf-8');
       if (req.method === 'GET' && p === '/api/config') return send(res, 200, { instruments: INSTRUMENTS, timeframes: Object.keys(E.TF_MIN), tz: tz(), hasKey: config.hasKey, storage: { path: (config.storage || {}).path || '', isDefault: !!(config.storage || {}).isDefault, createdAt: Number(store.getSetting('db_created_at')) || null }, telegram: { token: !!(config.telegram || {}).token, chat: !!(config.telegram || {}).chat, problems: (config.telegram || {}).problems || [] }, params: service.params(), note: 'XAU/USD works only if your data plan includes it.' });
+      if (req.method === 'GET' && p === '/api/live') { if (!config.hasKey) return send(res, 200, { ok: false, setup: true }); const [symbol, tf] = pair(u); return send(res, 200, await service.live(symbol, tf, { force: u.searchParams.get('force') === '1' })); }
       if (req.method === 'GET' && p === '/api/snapshot') { if (!config.hasKey) return send(res, 200, { setup: true }); return send(res, 200, await service.snapshot(...pair(u), u.searchParams.get('force') === '1')); }
       if (req.method === 'GET' && p === '/api/signals') { const s = u.searchParams.get('status'); if (s && !['open', 'closed'].includes(s)) throw new Error('Bad status'); if (config.hasKey) await service.trackAll(); return send(res, 200, await service.enrich(store.listSignals({ status: s }))); }
       if (req.method === 'GET' && p === '/api/scan') { const sy = u.searchParams.get('symbol'); if (!INSTRUMENTS.includes(sy)) throw new Error('Unsupported symbol'); return send(res, 200, config.hasKey ? await service.scan(sy) : []); }
@@ -78,7 +79,8 @@ if (require.main === module) {
     storage: { path: dbPath, isDefault: !env.DB_PATH }, telegram: { token: tgRaw, chat: !!tgChat, problems: tgCheck.problems, discover: () => (tgToken ? N.discoverChatId(tgToken) : tgFail()), test: () => (tgToken ? N.send({ token: tgToken, chatId: tgChat }, 'Pipwise test message: alerts are working.') : tgFail()) } };
   const host = env.HOST || '127.0.0.1', port = Number(env.PORT || 3000);
   if (host !== '127.0.0.1' && !config.password) { console.error('Refusing to listen on a public address without PIPWISE_PASSWORD.'); process.exit(1); }
-  const service = createService({ store, fetchCandles: provider.fetchCandles, maxApprovals: Number(env.MAX_APPROVALS || 5) });
+  const service = createService({ store, fetchCandles: provider.fetchCandles, maxApprovals: Number(env.MAX_APPROVALS || 5), liveDailyBudget: Number(env.LIVE_DAILY_BUDGET) || 300 });
+  { const p = require('./selfcheck').checkService(service); if (p.length) { console.error('Pipwise cannot start because some files are out of date:\n - ' + p.join('\n - ')); process.exit(1); } }
   if (tgToken && tgChat && !store.getSetting('tg_baseline')) { store.markAllSent(); store.setSetting('tg_baseline', '1'); } // never send old alerts when Telegram is first enabled
   const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || N.DEFAULT_TYPES.join(',')).split(',').map(x => x.trim()) });
   const runner = require('./experiments').createRunner({ store, service, dailyLimit: Number(env.EXPERIMENT_DAILY_LIMIT || 200) }); require('./experiments').register(store); runner.recover(); // tests interrupted by a restart go back in the queue

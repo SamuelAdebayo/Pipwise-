@@ -50,26 +50,55 @@ const nowLocal=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:CFG.tz,dateStyle:'s
 /* ---------- router ---------- */
 const PAGES={home,trades,lab,audit,more};let page='home';
 const NAV=[['home','Home'],['trades','Trades'],['lab','Lab'],['audit','Audit'],['more','More']];
-async function route(){if(!CFG)return;const [p,sub]=(location.hash||'#home').slice(1).split('/');page=PAGES[p]?p:'home';
+async function route(){if(!CFG)return;const [p,sub]=(location.hash||'#home').slice(1).split('/');page=PAGES[p]?p:'home';if(page!=='home')stopLive();
  document.querySelectorAll('#bar a').forEach(a=>a.classList.toggle('on',a.dataset.p===page));
  $('#view').innerHTML='<div class="card mut">Loading…</div>';try{await PAGES[page](sub)}catch(e){$('#view').innerHTML=`<div class="card err">${esc(e.message)}</div>`}window.scrollTo(0,0)}
 async function init(){CFG=await api('/api/config');$('#bar').innerHTML=NAV.map(([k,l])=>`<a href="#${k}" data-p="${k}">${l}</a>`).join('');
  if(!CFG.instruments.includes(S.sym))S.sym=CFG.instruments[0];if(!CFG.timeframes.includes(S.tf))S.tf=CFG.timeframes[0];
  window.addEventListener('hashchange',route);setInterval(()=>{$('#clock').textContent='· '+tmS(Date.now())+' '+CFG.tz},1000);
- setInterval(()=>{if(!document.hidden&&page==='home'&&$('#sig')){loadHome(false);loadScan()}},120000);route()}
+ document.addEventListener&&document.addEventListener('visibilitychange',()=>{if(!document.hidden)livePoll(false)});setInterval(()=>{if(!document.hidden&&page==='home'&&$('#sig')&&!LIVE.timer)loadHome(false)},600000);route()}
 
 /* ---------- HOME: what is the signal right now ---------- */
-async function home(){$('#view').innerHTML=`${CFG.storage&&CFG.storage.isDefault?'<div class="card"><b class="warn">Temporary storage</b><p>Your history is erased whenever the service sleeps, restarts or redeploys. Download a backup, or set up a persistent disk.</p><a href="#more/settings">Open backup and storage</a></div>':''}<div class="card"><div class="row">${pairSel()}<button id="rf">Refresh</button></div><div id="stat" style="margin-top:8px" class="mut">Loading…</div></div>
+async function home(){$('#view').innerHTML=`${CFG.storage&&CFG.storage.isDefault?'<div class="card"><b class="warn">Temporary storage</b><p>Your history is erased whenever the service sleeps, restarts or redeploys. Download a backup, or set up a persistent disk.</p><a href="#more/settings">Open backup and storage</a></div>':''}<div class="card"><div class="row">${pairSel()}<button id="rf">Refresh</button></div><div id="stat" style="margin-top:8px" class="mut">Loading…</div><div id="live" class="mut note"></div></div>
  <div class="card" id="sig"></div><div id="oth"></div><div class="card" id="scan"><h2>All timeframes</h2><div class="mut">Loading…</div></div><div class="card" id="cht"></div>
  <details class="card" id="why"><summary>Why this signal? Rules and indicators</summary><div id="whyb"></div></details>`;
  bindSel(home);$('#rf').onclick=()=>{loadHome(true);loadScan()};loadHome(false);loadScan()}
+function renderStat(d){
+ const st=(d.market&&!d.market.open)?['MARKET CLOSED','warn',`Reopens ${tm(d.market.nextOpen)}. No new signals until then.`]:d.fromCache?['CACHED','warn',`Showing saved data (${d.cacheAgeSec}s old) because of the provider limit.`]:d.stale?['STALE','warn','The latest candle is older than expected, so no new signals are created.']:['FRESH','ok','Data is up to date.'];
+ $('#stat').innerHTML=`<span class="chip ${st[1]}">${st[0]}</span> ${esc(st[2])}<br>Price now <b>${f(d.symbol,d.livePrice)}</b>${d.live?'':' (market closed, last close)'} · last candle closed ${tm(d.latestCandleT+TFM[d.tf]*60000)} · checked ${tmS(d.checkedAt||Date.now())}${d.excludedCandles?`<br><span class="warn">${d.excludedCandles} bad candle(s) from the provider were skipped.</span>`:''}`;}
+let D=null;const LIVE={timer:null,close:null,busy:false,fails:0,tries:0,reloaded:0};
+function stopLive(){clearTimeout(LIVE.timer);clearTimeout(LIVE.close);LIVE.timer=LIVE.close=null}
+function scheduleLive(ms){clearTimeout(LIVE.timer);LIVE.timer=setTimeout(()=>livePoll(false),Math.max(5000,ms||60000))}
+function scheduleClose(){clearTimeout(LIVE.close);const ms=TFM[S.tf]*60000;LIVE.tries=0;LIVE.close=setTimeout(()=>livePoll(true),ms-(Date.now()%ms)+10000)}
+function startLive(){stopLive();scheduleLive(5000);scheduleClose()}
+function liveNote(t){const n=$('#live');if(n)n.textContent=t}
+async function livePoll(force){
+ if(page!=='home'||document.hidden||!D||!$('#cht')||LIVE.busy)return;
+ const sym=S.sym,tf=S.tf;LIVE.busy=true;let j;
+ try{j=await api(`/api/live?symbol=${encodeURIComponent(sym)}&tf=${tf}${force?'&force=1':''}`)}catch(e){j={ok:false,error:{message:e.message}}}finally{LIVE.busy=false}
+ if(sym!==S.sym||tf!==S.tf||page!=='home')return;
+ await applyLive(j,force)}
+async function applyLive(j,force){
+ if(!D)return;if(j.setup){stopLive();return}
+ if(!j.ok){LIVE.fails++;liveNote(`Live update failed (${(j.error&&j.error.message)||'unknown'}). Trying again shortly. The chart shows the last data received.`);scheduleLive(Math.min(60000*2**Math.min(LIVE.fails,3),300000));return}
+ LIVE.fails=0;
+ if(j.market&&!j.market.open){liveNote('Market closed. Live updates resume when it reopens.');scheduleLive(j.nextPollMs||300000);return}
+ if(j.paused){liveNote('Live updates are paused for today to protect your data allowance. Use Refresh for a manual update.');scheduleLive(j.nextPollMs||300000);return}
+ const cs=j.candles||[],have=D.chart.length?D.chart[D.chart.length-1].t:0,shut=cs.filter(k=>!k.forming),newest=shut.length?shut[shut.length-1].t:0,fresh=newest>have;
+ if(fresh&&newest>LIVE.reloaded){LIVE.reloaded=newest;await loadHome(false);await loadScan();if(!D)return} // a candle closed: reload the signal, levels and all timeframes once
+ const forming=cs.find(k=>k.forming)||null;D.forming=forming;
+ if(j.price!=null){D.livePrice=j.price;D.live={price:j.price,t:forming?forming.t:D.latestCandleT}}
+ D.checkedAt=j.fetchedAt||Date.now();renderStat(D);chart(D);
+ liveNote(`Live ${j.delayed?'(delayed) ':''}· price ${f(D.symbol,j.price)} · updated ${tmS(D.checkedAt)} · next check in about ${Math.round((j.nextPollMs||60000)/1000)} s`);
+ if(force&&!fresh&&LIVE.tries<3){LIVE.tries++;clearTimeout(LIVE.close);LIVE.close=setTimeout(()=>livePoll(true),15000)} // the closing candle is not published yet: ask again shortly
+ else if(force)scheduleClose();
+ scheduleLive(j.nextPollMs)}
 async function loadHome(force){let d;try{d=await api(`/api/snapshot?symbol=${encodeURIComponent(S.sym)}&tf=${S.tf}${force?'&force=1':''}`)}catch(e){d={ok:false,error:{kind:'client',message:e.message}}}
  const b=$('#rf');if(!b||!$('#sig'))return;
  if(d.setup){$('#stat').textContent='';$('#sig').innerHTML='<h2>Setup needed</h2><p>No market-data key is set on the server, so no prices are shown. Add TWELVEDATA_API_KEY and restart.</p>';return}
  if(!d.ok){$('#stat').innerHTML=`<span class="chip warn">ERROR</span> ${esc(d.error.kind)} · checked ${tmS(Date.now())}`;$('#sig').innerHTML=`<div class="big err">No data</div><p>${esc(d.error.message)}</p><p class="mut">No prices are invented. Your saved trades are safe.</p>`;$('#cht').innerHTML='';$('#why').hidden=true;$('#oth').innerHTML='';return}
  $('#why').hidden=false;
- const st=(d.market&&!d.market.open)?['MARKET CLOSED','warn',`Reopens ${tm(d.market.nextOpen)}. No new signals until then.`]:d.fromCache?['CACHED','warn',`Showing saved data (${d.cacheAgeSec}s old) because of the provider limit.`]:d.stale?['STALE','warn','The latest candle is older than expected, so no new signals are created.']:['FRESH','ok','Data is up to date.'];
- $('#stat').innerHTML=`<span class="chip ${st[1]}">${st[0]}</span> ${esc(st[2])}<br>Price now <b>${f(d.symbol,d.livePrice)}</b>${d.live?'':' (market closed, last close)'} · last candle closed ${tm(d.latestCandleT+TFM[d.tf]*60000)} · checked ${tmS(Date.now())}${d.excludedCandles?`<br><span class="warn">${d.excludedCandles} bad candle(s) from the provider were skipped.</span>`:''}`;
+ renderStat(d);D=d;D.forming=null;startLive();
  const L=d.levels,failed=(d.rules||[]).filter(r=>!r.pass).map(r=>r.name),lab={BUY:'BUY ▲',SELL:'SELL ▼',WAIT:'WAIT'}[d.signal];
  $('#sig').innerHTML=`<div class="mut">${esc(d.symbol)} · ${esc(d.tf)} chart · EMA / RSI / ATR trend follower (original rules)</div><div class="big ${d.signal}">${lab}</div><div>${d.signal==='WAIT'?esc(d.reason?'Not enough price history yet.':'No trade. Not met: '+failed.join('; ')):'All 4 rules pass on the latest closed candle.'}</div>`
   +(d.entryCheck?`<div class="check"><span class="chip">${esc(d.entryCheck.state)}</span> ${esc(d.entryCheck.text)}</div>`:'')
@@ -86,13 +115,13 @@ function renderOthers(d){const o=others(d),el=$('#oth');if(!el)return;if(!o.leng
   +o.map(s=>`<div style="border-top:1px solid var(--bd);padding:10px 0;margin-top:8px"><div class="row sp"><b>${esc(s.name)} · ${esc(s.strategy_version)}</b><span class="chip ${s.result==='WAIT'?'':s.result}">${s.fresh?RES[s.result]:'NO FRESH DATA'}</span></div>`
    +(s.levels?`<div class="grid3"><div class="kv"><span>Entry</span><b>${f(d.symbol,s.levels.entry)}</b></div><div class="kv"><span>Stop</span><b>${f(d.symbol,s.levels.stop)}</b></div><div class="kv"><span>Target</span><b>${f(d.symbol,s.levels.target)}</b></div></div>`+(s.entryCheck?`<div class="mut"><span class="chip">${esc(s.entryCheck.state)}</span> ${esc(s.entryCheck.text)}</div>`:''):'')
    +`<details style="margin-top:6px"><summary>Why this result?</summary><div class="note"><b>Buy rules</b>${condList(s.conditions.buy)}<b>Sell rules</b>${condList(s.conditions.sell)}</div></details></div>`).join('')+'</div>'}
-function chart(d){const c=d.chart.slice(-90),L=d.levels,W=720,H=300,P=50;if(!c.length){$('#cht').innerHTML='';return}
+function chart(d){const c0=d.chart.slice(-90),fc=(d.forming&&c0.length&&d.forming.t>c0[c0.length-1].t)?d.forming:null,c=fc?c0.concat([fc]):c0,L=d.levels,W=720,H=300,P=50;if(!c.length){$('#cht').innerHTML='';return}
  const v=c.flatMap(k=>[k.h,k.l]).concat(L?[L.stop,L.target]:[]),mx=Math.max(...v),mn=Math.min(...v),y=x=>8+(H-26)*(mx-x)/(mx-mn||1),bw=(W-P)/c.length,x=i=>i*bw+bw/2;let s='';
  for(let i=0;i<=4;i++){const p=mn+(mx-mn)*i/4;s+=`<line x1="0" x2="${W-P}" y1="${y(p)}" y2="${y(p)}" stroke="currentColor" opacity=".1"/><text x="${W-P+3}" y="${y(p)+4}">${f(d.symbol,p)}</text>`}
- c.forEach((k,i)=>{const up=k.c>=k.o,col=up?'var(--up)':'var(--dn)';s+=`<line x1="${x(i)}" x2="${x(i)}" y1="${y(k.h)}" y2="${y(k.l)}" stroke="${col}"/><rect x="${x(i)-bw*.35}" y="${y(Math.max(k.o,k.c))}" width="${bw*.7}" height="${Math.max(1,Math.abs(y(k.o)-y(k.c)))}" fill="${col}"/>`});
+ c.forEach((k,i)=>{const up=k.c>=k.o,col=up?'var(--up)':'var(--dn)';s+=`<line x1="${x(i)}" x2="${x(i)}" y1="${y(k.h)}" y2="${y(k.l)}" stroke="${col}"/><rect x="${x(i)-bw*.35}" y="${y(Math.max(k.o,k.c))}" width="${bw*.7}" height="${Math.max(1,Math.abs(y(k.o)-y(k.c)))}" fill="${col}"${k===fc?' opacity=".55"':''}/>`});
  [['e20','#e8a317'],['e50','#2a7de1'],['e200','#8a5cd6']].forEach(([k,col])=>{const pts=c.map((q,i)=>q[k]==null?null:`${x(i)},${y(q[k])}`).filter(Boolean).join(' ');if(pts)s+=`<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.2"/>`});
  if(L)[['Entry',L.entry,'currentColor'],['Stop',L.stop,'var(--dn)'],['Target',L.target,'var(--up)']].forEach(([n,p,col])=>s+=`<line x1="0" x2="${W-P}" y1="${y(p)}" y2="${y(p)}" stroke="${col}" stroke-dasharray="5 4"/><text x="4" y="${y(p)-3}">${n} ${f(d.symbol,p)}</text>`);
- $('#cht').innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Candlestick chart"><g>${s}</g><text x="4" y="${H-4}">EMA20 amber · EMA50 blue · EMA200 purple</text></svg>`}
+ $('#cht').innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Candlestick chart"><g>${s}</g><text x="4" y="${H-4}">EMA20 amber · EMA50 blue · EMA200 purple${fc?' · faded candle = still forming':''}</text></svg>`}
 async function loadScan(){let rows;try{rows=await api('/api/scan?symbol='+encodeURIComponent(S.sym))}catch(e){if($('#scan'))$('#scan').innerHTML=`<h2>All timeframes</h2><span class="err">${esc(e.message)}</span>`;return}
  const el=$('#scan');if(!el)return;if(!rows.length){el.innerHTML='';return}
  const ok=new Set();rows.forEach(r=>{if(!r.ok)return;if(r.signal!=='WAIT'&&r.entryCheck&&r.entryCheck.state==='ENTER')ok.add(`${r.tf} ${r.signal}`);(r.open||[]).forEach(o=>{if(o.check.state==='ENTER')ok.add(`${r.tf} ${o.dir}`)})});

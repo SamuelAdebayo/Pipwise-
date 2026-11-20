@@ -20,4 +20,7 @@ function check(dir = __dirname, required = REQUIRED) {
   if (!fs.existsSync(path.join(dir, 'index.html'))) problems.push('index.html is missing. Add it to GitHub.');
   return problems;
 }
-module.exports = { check, REQUIRED };
+// The service object is built at start-up, so an outdated service.js is caught by asking it for the functions server.js uses.
+const SERVICE_FUNCTIONS = ['snapshot', 'scan', 'live', 'trackAll', 'scanApproved', 'recordMiss', 'evaluationState', 'callsInLastMinute', 'auditTrack'];
+function checkService(service) { const lacking = SERVICE_FUNCTIONS.filter(n => typeof service[n] !== 'function'); return lacking.length ? [`service.js is out of date: it does not have ${lacking.join(', ')}. Paste the latest service.js.`] : []; }
+module.exports = { check, checkService, REQUIRED };
