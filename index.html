@@ -60,9 +60,23 @@ async function init(){CFG=await api('/api/config');$('#bar').innerHTML=NAV.map((
 
 /* ---------- HOME: what is the signal right now ---------- */
 async function home(){$('#view').innerHTML=`${CFG.storage&&CFG.storage.isDefault?'<div class="card"><b class="warn">Temporary storage</b><p>Your history is erased whenever the service sleeps, restarts or redeploys. Download a backup, or set up a persistent disk.</p><a href="#more/settings">Open backup and storage</a></div>':''}<div class="card"><div class="row">${pairSel()}<button id="rf">Refresh</button></div><div id="stat" style="margin-top:8px" class="mut">Loading…</div><div id="live" class="mut note"></div></div>
- <div class="card" id="sig"></div><div id="oth"></div><div class="card" id="scan"><h2>All timeframes</h2><div class="mut">Loading…</div></div><div class="card" id="cht"></div>
+ <div class="card" id="sig"></div><div id="oth"></div><div class="card" id="scan"><h2>All timeframes</h2><div class="mut">Loading…</div></div><div class="card" id="chartcard"><div class="seg" id="vtabs"><a id="v-live" href="javascript:void(0)">Live market</a><a id="v-levels" href="javascript:void(0)">Signal chart</a></div><div id="tvbox" style="height:420px;margin-top:10px"></div><div id="tvlev" class="note"></div><div id="cht"></div><div id="tvnote" class="mut note">Live prices and candles on the Live market tab are TradingView's own feed, not Twelve Data. Pipwise's signals and levels use Twelve Data candles, so they can differ from the TradingView price by a pip or two. <a id="tvnext" href="javascript:void(0)">Chart blank or symbol not available? Try another TradingView feed</a></div></div>
  <details class="card" id="why"><summary>Why this signal? Rules and indicators</summary><div id="whyb"></div></details>`;
- bindSel(home);$('#rf').onclick=()=>{loadHome(true);loadScan()};loadHome(false);loadScan()}
+ bindSel(home);$('#v-live').onclick=()=>setView('live');$('#v-levels').onclick=()=>setView('levels');$('#tvnext').onclick=tvNext;$('#rf').onclick=()=>{loadHome(true);loadScan()};loadHome(false);loadScan()}
+const TVI={'15min':'15','1h':'60','4h':'240','1day':'D'};
+const TVS={'EUR/USD':['FX:EURUSD','OANDA:EURUSD','FX_IDC:EURUSD','FOREXCOM:EURUSD'],'GBP/USD':['FX:GBPUSD','OANDA:GBPUSD','FX_IDC:GBPUSD','FOREXCOM:GBPUSD'],'USD/JPY':['FX:USDJPY','OANDA:USDJPY','FX_IDC:USDJPY','FOREXCOM:USDJPY'],'GBP/JPY':['FX:GBPJPY','OANDA:GBPJPY','FX_IDC:GBPJPY','FOREXCOM:GBPJPY'],'XAU/USD':['OANDA:XAUUSD','FOREXCOM:XAUUSD','TVC:GOLD','FX_IDC:XAUUSD']};
+const tvSym=(sym,i)=>{const l=TVS[sym]||[sym.replace('/','')];return l[(i||0)%l.length]};
+const tvConfig=(sym,tf,i)=>({autosize:true,symbol:tvSym(sym,i),interval:TVI[tf]||'60',timezone:(CFG&&CFG.tz)||'Etc/UTC',theme:'dark',style:'1',locale:'en',allow_symbol_change:false,hide_side_toolbar:true,withdateranges:false,save_image:false,calendar:false,support_host:'https://www.tradingview.com'});
+function mountTV(){ // TradingView's own embeddable chart: its live feed, drawn by TradingView. Only rebuilt when the pair, timeframe or feed changes.
+ const box=$('#tvbox');if(!box)return;S.tv=S.tv||{};const key=S.sym+'|'+S.tf+'|'+(S.tv[S.sym]||0);if(box.dataset.key===key)return;box.dataset.key=key;box.innerHTML='';
+ const w=document.createElement('div');w.className='tradingview-widget-container';w.style.height='100%';w.style.width='100%';
+ const inner=document.createElement('div');inner.className='tradingview-widget-container__widget';inner.style.height='100%';inner.style.width='100%';w.appendChild(inner);
+ const sc=document.createElement('script');sc.src='https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';sc.async=true;sc.innerHTML=JSON.stringify(tvConfig(S.sym,S.tf,S.tv[S.sym]||0));w.appendChild(sc);box.appendChild(w)}
+function tvNext(){S.tv=S.tv||{};S.tv[S.sym]=((S.tv[S.sym]||0)+1)%(TVS[S.sym]||[0]).length;keep();mountTV()}
+function showView(v){const live=v!=='levels';[['#tvbox',live],['#tvlev',live],['#cht',!live]].forEach(([s,show])=>{const e=$(s);if(e)e.hidden=!show});const a=$('#v-live'),b=$('#v-levels');if(a)a.className=live?'on':'';if(b)b.className=live?'':'on';if(live)mountTV()}
+function setView(v){S.view=v;keep();showView(v)}
+function renderTVLev(d){const e=$('#tvlev');if(!e)return;const L=d.levels,st=d.entryCheck&&d.entryCheck.state; // only a tradable reading is shown as a signal
+ e.innerHTML=(d.signal==='BUY'||d.signal==='SELL')&&L?((!st||st==='ENTER'||st==='LATE')?`<b>${d.signal}</b> · Entry ${f(d.symbol,L.entry)} · Stop ${f(d.symbol,L.stop)} · Target ${f(d.symbol,L.target)}${st==='LATE'?' · late: price has moved from the entry':''}`:`${d.signal} reading is not tradable now (${esc(st)}).`):'No active signal on this pair and timeframe right now.'}
 function renderStat(d){
  const st=(d.market&&!d.market.open)?['MARKET CLOSED','warn',`Reopens ${tm(d.market.nextOpen)}. No new signals until then.`]:d.fromCache?['CACHED','warn',`Showing saved data (${d.cacheAgeSec}s old) because of the provider limit.`]:d.stale?['STALE','warn','The latest candle is older than expected, so no new signals are created.']:['FRESH','ok','Data is up to date.'];
  $('#stat').innerHTML=`<span class="chip ${st[1]}">${st[0]}</span> ${esc(st[2])}<br>Price now <b>${f(d.symbol,d.livePrice)}</b>${d.live?'':' (market closed, last close)'} · last candle closed ${tm(d.latestCandleT+TFM[d.tf]*60000)} · checked ${tmS(d.checkedAt||Date.now())}${d.excludedCandles?`<br><span class="warn">${d.excludedCandles} bad candle(s) from the provider were skipped.</span>`:''}`;}
@@ -98,7 +112,7 @@ async function loadHome(force){let d;try{d=await api(`/api/snapshot?symbol=${enc
  if(d.setup){$('#stat').textContent='';$('#sig').innerHTML='<h2>Setup needed</h2><p>No market-data key is set on the server, so no prices are shown. Add TWELVEDATA_API_KEY and restart.</p>';return}
  if(!d.ok){$('#stat').innerHTML=`<span class="chip warn">ERROR</span> ${esc(d.error.kind)} · checked ${tmS(Date.now())}`;$('#sig').innerHTML=`<div class="big err">No data</div><p>${esc(d.error.message)}</p><p class="mut">No prices are invented. Your saved trades are safe.</p>`;$('#cht').innerHTML='';$('#why').hidden=true;$('#oth').innerHTML='';return}
  $('#why').hidden=false;
- renderStat(d);D=d;D.forming=null;startLive();
+ renderStat(d);D=d;D.forming=null;startLive();renderTVLev(d);showView(S.view||'live');
  const L=d.levels,failed=(d.rules||[]).filter(r=>!r.pass).map(r=>r.name),lab={BUY:'BUY ▲',SELL:'SELL ▼',WAIT:'WAIT'}[d.signal];
  $('#sig').innerHTML=`<div class="mut">${esc(d.symbol)} · ${esc(d.tf)} chart · EMA / RSI / ATR trend follower (original rules)</div><div class="big ${d.signal}">${lab}</div><div>${d.signal==='WAIT'?esc(d.reason?'Not enough price history yet.':'No trade. Not met: '+failed.join('; ')):'All 4 rules pass on the latest closed candle.'}</div>`
   +(d.entryCheck?`<div class="check"><span class="chip">${esc(d.entryCheck.state)}</span> ${esc(d.entryCheck.text)}</div>`:'')
