@@ -2,7 +2,7 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const E = require('./engine'), { INSTRUMENTS, cleanParams } = require('./service');
 
-function createApp({ service, store, config, runner, health }) {
+function createApp({ service, store, config, runner, health, backup }) {
   const pj = s => { try { return s == null ? null : JSON.parse(s); } catch { return s; } };
   const page = fs.readFileSync(path.join(__dirname, 'index.html'));
   const send = (res, code, body, type = 'application/json') => { res.writeHead(code, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' }); res.end(type === 'application/json' ? JSON.stringify(body) : body); };
@@ -17,6 +17,7 @@ function createApp({ service, store, config, runner, health }) {
   const tz = () => store.getSetting('tz') || config.tz;
   return async (req, res) => {
     try {
+      if ((req.method === 'GET' || req.method === 'HEAD') && (req.url || '').split('?')[0] === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end(req.method === 'HEAD' ? undefined : 'ok'); } // public and tiny: lets a free uptime monitor keep the app awake; reveals nothing
       if (!authed(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Pipwise"' }); return res.end('Authentication required'); }
       const u = new URL(req.url, 'http://x'), p = u.pathname;
       if (req.method === 'GET' && p === '/') return send(res, 200, page, 'text/html; charset=utf-8');
@@ -35,6 +36,7 @@ function createApp({ service, store, config, runner, health }) {
       if (req.method === 'GET' && p === '/api/approvals') return send(res, 200, store.listApprovals().map(a => ({ ...a, name: (require('./strategies').resolve(store, a.strategy_id) || {}).name || a.strategy_id })));
       if (req.method === 'POST' && p === '/api/approvals') { const b = await body(req); return send(res, 200, service.approveSetup({ strategy_id: b.strategy_id, version: b.version, symbol: b.symbol, tf: b.tf })); }
       if (req.method === 'POST' && (p === '/api/approvals/stop' || p === '/api/approvals/resume')) return send(res, 200, service.setApproval((await body(req)).id, p.endsWith('stop') ? 'stopped' : 'active'));
+      if (req.method === 'POST' && p === '/api/backup/telegram') { if (!backup) throw new Error('Backup is not set up'); return send(res, 200, await backup.run({ force: true })); }
       if (req.method === 'GET' && p === '/api/health') return send(res, 200, { now: Date.now(), storage: { path: (config.storage || {}).path || '', isDefault: !!(config.storage || {}).isDefault, createdAt: Number(store.getSetting('db_created_at')) || null }, queue: store.experimentCounts(), approvals: store.listApprovals().filter(a => a.status === 'active').length, telegram: { token: !!(config.telegram || {}).token, chat: !!(config.telegram || {}).chat }, ...(health ? health() : {}) });
       if (req.method === 'GET' && p === '/api/alerts') return send(res, 200, store.listAlerts());
       if (req.method === 'POST' && p === '/api/alerts/read') return send(res, 200, { updated: store.markAlertsRead() });
@@ -83,12 +85,13 @@ if (require.main === module) {
   { const p = require('./selfcheck').checkService(service); if (p.length) { console.error('Pipwise cannot start because some files are out of date:\n - ' + p.join('\n - ')); process.exit(1); } }
   if (tgToken && tgChat && !store.getSetting('tg_baseline')) { store.markAllSent(); store.setSetting('tg_baseline', '1'); } // never send old alerts when Telegram is first enabled
   const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || N.DEFAULT_TYPES.join(',')).split(',').map(x => x.trim()) });
+  let backup = null; try { backup = require('./backup').createBackup({ store, token: tgToken, chatId: tgChat }); } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; } // optional: automatic backup of the database to the owner's Telegram chat; the app runs the same without backup.js
   const runner = require('./experiments').createRunner({ store, service, dailyLimit: Number(env.EXPERIMENT_DAILY_LIMIT || 200) }); require('./experiments').register(store); runner.recover(); // tests interrupted by a restart go back in the queue
   const watch = parseWatchlist(env.WATCHLIST), sch = createScheduler({ watch, snapshot: service.snapshot, onMiss: m => service.recordMiss(m.symbol, m.tf, m.expected, m.reason, m.attempts) });
   // Each step is isolated: one failing step is recorded (with its name and message) and the others still run. Alerts are delivered before research starts.
   const bg = require('./background').createBackground({ store, steps: [
     { name: 'watchlist', run: () => sch.tick() }, { name: 'approved-strategies', run: () => service.scanApproved() }, { name: 'outcome-tracking', run: () => service.trackAll() }, { name: 'audit-tracking', run: () => service.auditTrack() },
-    { name: 'telegram', run: () => deliver() }, { name: 'research-planning', run: async () => { if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); } }, { name: 'research-tests', run: () => runner.runBatch(5) }] });
+    { name: 'telegram', run: () => deliver() }, ...(backup ? [{ name: 'telegram-backup', run: () => backup.run() }] : []), { name: 'research-planning', run: async () => { if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); } }, { name: 'research-tests', run: () => runner.runBatch(5) }] });
   if (config.hasKey) { setTimeout(() => bg.cycle(), 5000); setInterval(() => bg.cycle(), 60000); }
-  http.createServer(createApp({ service, store, config, runner, health: () => ({ background: bg.snapshot(), evaluations: service.evaluationState(), watchlist: sch.state(), calls: service.callsInLastMinute() }) })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
+  http.createServer(createApp({ service, store, config, runner, backup, health: () => ({ backup: backup ? backup.state() : null, background: bg.snapshot(), evaluations: service.evaluationState(), watchlist: sch.state(), calls: service.callsInLastMinute() }) })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
 }
