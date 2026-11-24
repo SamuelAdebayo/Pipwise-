@@ -7,7 +7,7 @@ const REQUIRED = {
   'store.js': ['open', 'MIGRATIONS'], 'provider.js': ['fetchCandles'], 'service.js': ['createService', 'INSTRUMENTS'], 'scheduler.js': ['createScheduler', 'parseWatchlist'],
   'notifier.js': ['DEFAULT_TYPES', 'createDelivery', 'checkToken', 'send', 'discoverChatId'], 'experiments.js': ['createRunner', 'register', 'candidates', 'judgeStrategyV2'],
   'strategies.js': ['STRATEGIES', 'resolve', 'explain'], 'rules.js': ['validateSpec', 'explain', 'mirror'], 'market.js': ['isOpen', 'lastCandleOpen', 'alwaysOpen'],
-  'background.js': ['createBackground'], 'retry.js': ['retryDelay'],
+  'background.js': ['createBackground'], 'version.js': ['fingerprint', 'summary', 'describe', 'REQUIRED'], 'retry.js': ['retryDelay'],
 };
 function check(dir = __dirname, required = REQUIRED) {
   const problems = [];

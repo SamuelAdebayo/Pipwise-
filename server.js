@@ -2,7 +2,7 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const E = require('./engine'), { INSTRUMENTS, cleanParams } = require('./service');
 
-function createApp({ service, store, config, runner, health, backup }) {
+function createApp({ service, store, config, runner, health, backup, version }) {
   const pj = s => { try { return s == null ? null : JSON.parse(s); } catch { return s; } };
   const page = fs.readFileSync(path.join(__dirname, 'index.html'));
   const send = (res, code, body, type = 'application/json') => { res.writeHead(code, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' }); res.end(type === 'application/json' ? JSON.stringify(body) : body); };
@@ -37,6 +37,7 @@ function createApp({ service, store, config, runner, health, backup }) {
       if (req.method === 'POST' && p === '/api/approvals') { const b = await body(req); return send(res, 200, service.approveSetup({ strategy_id: b.strategy_id, version: b.version, symbol: b.symbol, tf: b.tf })); }
       if (req.method === 'POST' && (p === '/api/approvals/stop' || p === '/api/approvals/resume')) return send(res, 200, service.setApproval((await body(req)).id, p.endsWith('stop') ? 'stopped' : 'active'));
       if (req.method === 'POST' && p === '/api/backup/telegram') { if (!backup) throw new Error('Backup is not set up'); return send(res, 200, await backup.run({ force: true })); }
+      if (req.method === 'GET' && p === '/api/version') { if (!version) throw new Error('Build information is not available'); return send(res, 200, { ...version(), now: Date.now() }); } // behind the login; a fixed set of fields, never environment values
       if (req.method === 'GET' && p === '/api/health') return send(res, 200, { now: Date.now(), storage: { path: (config.storage || {}).path || '', isDefault: !!(config.storage || {}).isDefault, createdAt: Number(store.getSetting('db_created_at')) || null }, queue: store.experimentCounts(), approvals: store.listApprovals().filter(a => a.status === 'active').length, telegram: { token: !!(config.telegram || {}).token, chat: !!(config.telegram || {}).chat }, ...(health ? health() : {}) });
       if (req.method === 'GET' && p === '/api/alerts') return send(res, 200, store.listAlerts());
       if (req.method === 'POST' && p === '/api/alerts/read') return send(res, 200, { updated: store.markAlertsRead() });
@@ -83,6 +84,7 @@ if (require.main === module) {
   if (host !== '127.0.0.1' && !config.password) { console.error('Refusing to listen on a public address without PIPWISE_PASSWORD.'); process.exit(1); }
   const service = createService({ store, fetchCandles: provider.fetchCandles, maxApprovals: Number(env.MAX_APPROVALS || 5), liveDailyBudget: Number(env.LIVE_DAILY_BUDGET) || 300 });
   { const p = require('./selfcheck').checkService(service); if (p.length) { console.error('Pipwise cannot start because some files are out of date:\n - ' + p.join('\n - ')); process.exit(1); } }
+  const V = require('./version'), buildInfo = V.fingerprint(), buildSummary = V.summary(buildInfo); console.log(V.describe(buildSummary)); if (!buildInfo.complete) console.warn('WARNING: ' + V.describe(buildSummary)); // which code is running; an incomplete fingerprint is loud, never silent
   if (tgToken && tgChat && !store.getSetting('tg_baseline')) { store.markAllSent(); store.setSetting('tg_baseline', '1'); } // never send old alerts when Telegram is first enabled
   const deliver = N.createDelivery({ store, token: tgToken, chatId: tgChat, types: (env.TELEGRAM_TYPES || N.DEFAULT_TYPES.join(',')).split(',').map(x => x.trim()) });
   let backup = null; try { backup = require('./backup').createBackup({ store, token: tgToken, chatId: tgChat }); } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; } // optional: automatic backup of the database to the owner's Telegram chat; the app runs the same without backup.js
@@ -93,5 +95,5 @@ if (require.main === module) {
     { name: 'watchlist', run: () => sch.tick() }, { name: 'approved-strategies', run: () => service.scanApproved() }, { name: 'outcome-tracking', run: () => service.trackAll() }, { name: 'audit-tracking', run: () => service.auditTrack() },
     { name: 'telegram', run: () => deliver() }, ...(backup ? [{ name: 'telegram-backup', run: () => backup.run() }] : []), { name: 'research-planning', run: async () => { if (env.AUTO_RESEARCH !== '0') runner.autoPlan(); } }, { name: 'research-tests', run: () => runner.runBatch(5) }] });
   if (config.hasKey) { setTimeout(() => bg.cycle(), 5000); setInterval(() => bg.cycle(), 60000); }
-  http.createServer(createApp({ service, store, config, runner, backup, health: () => ({ backup: backup ? backup.state() : null, background: bg.snapshot(), evaluations: service.evaluationState(), watchlist: sch.state(), calls: service.callsInLastMinute() }) })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
+  http.createServer(createApp({ service, store, config, runner, backup, version: () => buildInfo, health: () => ({ build: buildSummary, backup: backup ? backup.state() : null, background: bg.snapshot(), evaluations: service.evaluationState(), watchlist: sch.state(), calls: service.callsInLastMinute() }) })).listen(port, host, () => console.log(`Pipwise on http://${host}:${port} | data key: ${config.hasKey ? 'set' : 'MISSING'} | watching: ${watch.map(w => w.symbol + ':' + w.tf).join(', ') || 'none'} | telegram: ${tgToken && tgChat ? 'on' : tgCheck.problems.length ? 'token problem: ' + tgCheck.problems.join('; ') : 'off'} | db: ${dbPath}${env.DB_PATH ? '' : ' (TEMPORARY on most hosts: set DB_PATH to a persistent disk)'}`));
 }
