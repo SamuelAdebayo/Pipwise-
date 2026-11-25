@@ -60,7 +60,7 @@ function decide(v, p = DEFAULTS) {
     { name: `RSI in ${p.rsiBear[0]}-${p.rsiBear[1]}`, pass: v.rsi >= p.rsiBear[0] && v.rsi <= p.rsiBear[1] }, { name: 'Close < EMA20', pass: v.close < v.e20 }];
   const signal = buy.every(r => r.pass) ? 'BUY' : sell.every(r => r.pass) ? 'SELL' : 'WAIT';
   const rules = signal === 'SELL' ? sell : buy.filter(r => r.pass).length >= sell.filter(r => r.pass).length ? buy : sell;
-  return { signal, rules, levels: signal === 'WAIT' ? null : levels(signal, v.close, v.atr, p) };
+  return { signal, rules, sides: { buy, sell }, levels: signal === 'WAIT' ? null : levels(signal, v.close, v.atr, p) };
 }
 function levels(dir, entry, atrV, p = DEFAULTS) {
   const risk = p.atrStop * atrV, s = dir === 'BUY' ? 1 : -1;
